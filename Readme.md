@@ -1,0 +1,51 @@
+# GRPC Notification Service
+
+The major problem we are currently facing with the FCM is reliability. We don’t get any metrics regarding if the FCM’s were delivered or not. It’s just fire and forget. So in order to solve that issue we needed to come up with a system that is more reliable and tolerant to bandwidth fluctuations.
+
+## Why GRPC ?
+
+gRPC is a high-performance, widely adopted RPC framework with standardized implementations of client and server across many platforms and languages. The major reasons for moving towards gRPC are highlighted below:
+
+1. **Bidirectional Streaming** gRPC has first-class support for bidirectional streaming, the acknowledgement can be sent over the same stream instantly without extra networking calls from the mobile client. This could significantly improve the acknowledgement reliability for our BPP Backend.
+2. **QUIC/HTTP3** QUIC/HTTP3 essentially removes the head-of-line blocking by multiplexing streams, consistently and significantly improving mobile networking latency compared to HTTP2. It is based on UDP and is prone to connection migration.
+3. **Some Fault Tolerance To Bandwidth Fluctuations** On testing, we observed that when a message is sent to grpc channel for a client and in case the client's wifi is off for a small amount of time then the messages are still sent and when the client’s net is back on they get delivered altogether offering some amount of fault tolerance to network failures.
+4. **Keep-alive health check ping** It has a mechanism of frequent health checks on regular intervals of time so that in case if the bandwidth of the client is gone for long then we can close the connection.
+
+## Architecture
+
+1. Backend service can keep pushing new messages for the client to the Redis Streams.
+2. Notification servers can keep reading new messages from the streams and discover the GRPC server to which the client is connected to through service discovery and then send the message to the GRPC server.
+3. GRPC server then has to stream the message to the client and return the Success or Failure response to the Notification server based on which the server can acknowledge that message in the stream and move to the next message.
+4. In case if the client has lost network bandwidth, then the health check ping pong could fail and forcefully disconnect the client from the stream.
+5. The messages that were consumed by notification servers but were unable to be sent/acknowledged from the clients. Would be added as Pending messages in the consumer group which could then be retriggered at some regular intervals.
+6. On top of all we can have the right metrics that would help us in debugging the messages that were sent and not sent to the client.
+
+## Advantages
+
+1. Since we would have full control of the messages, we can also retry the undelivered messages again before they expire.
+2. We can introduce the right tooling and metrics to help us understand the message success rate and improve further.
+3. On testing, we found that if the client's wifi is turned off then the messages get sent once the client comes back on in some time, so it handles the cases where bandwidth fluctuates and gives us some reliability.
+4. We can also set a keep alive ping that can ask for acknowledgement from clients to be sure the client is not away for too long. If so then, we can forcefully terminate the connection.
+
+## Setup
+
+### GRPC Server
+
+1. install prometheus and run `prometheus` in root directory, it will start prometheus server on **localhost:9090**.
+2. run `cargo run --bin server`, it starts server on **localhost:5051**.
+
+### Client
+
+1. run `cargo run --bin client`, client connects to server and the stream starts.
+2. Also, client add it's id to the Redis Service Discovery (clientId : serverIp).
+
+### Notification Server
+
+1. run `cargo run --bin notifier`, notifier starts listening to the new messages from redis-streams.
+2. For every new message it identifies the grpc-server to which the client is connected to through redis service discovery.
+3. It then send the message to the correct GRPC server, which then broadcasts it to the client down the stream.
+
+### Redis Stream
+
+1. create the required redis stream and it's consumer, `XGROUP CREATE chat-stream-1 chat-group-1 $ MKSTREAM`
+2. add new message to the stream, `XADD chat-stream-1 * content helloworld to 4d5548b231641d024b901f321fe8c1265dcb38bd2d514d2ee23bc55ab124f676 ttl 36000`

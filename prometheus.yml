@@ -1,0 +1,17 @@
+global:
+  scrape_interval:     5s
+  evaluation_interval: 5s
+
+scrape_configs:
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'grpc-service'
+    static_configs:
+      - targets: ['localhost:5051']
+
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['localhost:5050']
