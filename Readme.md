@@ -13,6 +13,8 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 
 ## Architecture
 
+![GRPC Streaming](https://user-images.githubusercontent.com/38260510/219075736-baca827e-6516-4d72-9013-f466fbcd7a13.png)
+
 1. Backend service can keep pushing new messages for the client to the Redis Streams.
 2. Notification servers can keep reading new messages from the streams and discover the GRPC server to which the client is connected to through service discovery and then send the message to the GRPC server.
 3. GRPC server then has to stream the message to the client and return the Success or Failure response to the Notification server based on which the server can acknowledge that message in the stream and move to the next message.
