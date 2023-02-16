@@ -54,8 +54,9 @@ impl Shared {
     }
 
     async fn broadcast(&self, msg: &Message) -> Result<(), ()> {
-        if let Some(stream_tx) = self.senders.get(&msg.to) {
-            stream_tx.send(Ok(msg.clone())).await.unwrap();
+        match self.senders.get(&msg.to) {
+            Some(stream_tx) => stream_tx.send(Ok(msg.clone())).await.unwrap(),
+            None => return Err(()),
         }
 
         Ok(())
@@ -115,13 +116,13 @@ impl Chat for ChatService {
         let mut redis_conn = redis_client.get_connection().unwrap();
 
         let _result: redis::Value = redis_conn.set(&id, "https://127.0.0.1:5051").unwrap();
-
+        
         self.shared
             .write()
             .await
             .senders
             .insert(id.clone(), stream_tx);
-
+        
         Ok(Response::new(Box::pin(CustomStream(stream_rx))))
     }
 
@@ -152,7 +153,7 @@ impl Chat for ChatService {
                 println!("[REDIS CONNECTION]: redis://127.0.0.1/");
                 let mut redis_conn = redis_client.get_connection().unwrap();
 
-                self.shared.write().await.senders.remove(&msg.to);
+                // self.shared.write().await.senders.remove(&msg.to);
                 let _result: redis::Value = redis_conn.del(&msg.to).unwrap();
 
                 return Err(Status::unavailable(""));
@@ -216,9 +217,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
 
+    let shared = Arc::new(RwLock::new(Shared::new()));
+
     Server::bind(&addr)
         .serve(make_service_fn(move |_| {
-            let shared = Arc::new(RwLock::new(Shared::new()));
             let chat_service = ChatService::new(shared.clone());
 
             let mut tonic = TonicServer::builder()

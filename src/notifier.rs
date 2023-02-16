@@ -77,123 +77,125 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     register_custom_metrics();
 
-    warp::serve(warp::path!("metrics").and_then(metrics_handler))
-        .run(([0, 0, 0, 0], 5050))
-        .await;
-
-    loop {
-        let mut redis_conn = redis_client.get_connection().unwrap();
-
-        let stream_name = "chat-stream-1";
-        let consumer_group_name = "chat-group-1";
-        let consumer_name = "chat-consumer-1";
-
-        let opts = StreamReadOptions::default()
-            .group(consumer_group_name, consumer_name)
-            .block(0);
-        let result: StreamReadReply = redis_conn
-            .xread_options(&[&stream_name], &[">"], &opts)
-            .unwrap();
-
-        for stream_key in result.keys {
-            for stream in stream_key.ids {
-                let message = Message {
-                    id: stream.clone().id,
-                    to: stream.get("to").unwrap(),
-                    content: stream.get("content").unwrap(),
-                    ttl: stream.get("ttl").unwrap(),
-                };
-
-                CLIENT_MESSAGE_COLLECTOR.with_label_values(&[
-                    stream.get::<String>("to").unwrap().as_str(),
-                    message.id.as_str(),
-                ]);
-
-                println!(
-                    "[XREAD] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}",
-                    &message.id,
-                    stream_name,
-                    consumer_group_name,
-                    consumer_name
-                );
-
-                let server_ip: String =
-                    redis_conn.get(stream.get::<String>("to").unwrap()).unwrap();
-
-                println!(
-                    "[SERVER - CLIENT] {} : {}",
-                    stream.get::<String>("to").unwrap(),
-                    server_ip
-                );
-
-                let mut server = ChatClient::connect(server_ip).await.unwrap();
-                match server.send_message(Request::new(message.clone())).await {
-                    Ok(_) => {
-                        println!("[SENT TO CLIENT - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
-
-                        let ack = redis_conn.xack::<_, _, _, redis::Value>(
-                            &stream_name,
-                            "chat-group",
-                            &[&message.id],
-                        );
-
-                        CLIENT_MESSAGE_STATUS_COLLECTOR.with_label_values(&[
-                            &stream.get::<String>("to").unwrap(),
-                            message.id.as_str(),
-                            "delivered",
-                        ]);
-
-                        match ack {
-                            Ok(_) => {
-                                println!("[ACK - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
+    tokio::spawn(async move {
+        loop {
+            let mut redis_conn = redis_client.get_connection().unwrap();
+    
+            let stream_name = "chat-stream-1";
+            let consumer_group_name = "chat-group-1";
+            let consumer_name = "chat-consumer-1";
+    
+            let opts = StreamReadOptions::default()
+                .group(consumer_group_name, consumer_name)
+                .block(0);
+            let result: StreamReadReply = redis_conn
+                .xread_options(&[&stream_name], &[">"], &opts)
+                .unwrap();
+    
+            for stream_key in result.keys {
+                for stream in stream_key.ids {
+                    let message = Message {
+                        id: stream.clone().id,
+                        to: stream.get("to").unwrap(),
+                        content: stream.get("content").unwrap(),
+                        ttl: stream.get("ttl").unwrap(),
+                    };
+    
+                    CLIENT_MESSAGE_COLLECTOR.with_label_values(&[
+                        stream.get::<String>("to").unwrap().as_str(),
+                        message.id.as_str(),
+                    ]);
+    
+                    println!(
+                        "[XREAD] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}",
+                        &message.id,
+                        stream_name,
+                        consumer_group_name,
+                        consumer_name
+                    );
+    
+                    let server_ip: String =
+                        redis_conn.get(stream.get::<String>("to").unwrap()).unwrap();
+    
+                    println!(
+                        "[SERVER - CLIENT] {} : {}",
+                        stream.get::<String>("to").unwrap(),
+                        server_ip
+                    );
+    
+                    let mut server = ChatClient::connect(server_ip).await.unwrap();
+                    match server.send_message(Request::new(message.clone())).await {
+                        Ok(_) => {
+                            println!("[SENT TO CLIENT - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
+    
+                            let ack = redis_conn.xack::<_, _, _, redis::Value>(
+                                &stream_name,
+                                "chat-group",
+                                &[&message.id],
+                            );
+    
+                            CLIENT_MESSAGE_STATUS_COLLECTOR.with_label_values(&[
+                                &stream.get::<String>("to").unwrap(),
+                                message.id.as_str(),
+                                "delivered",
+                            ]);
+    
+                            match ack {
+                                Ok(_) => {
+                                    println!("[ACK - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
+                                }
+                                Err(e) => {
+                                    eprintln!("[ACK - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
+                                }
                             }
-                            Err(e) => {
-                                eprintln!("[ACK - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
-                            }
-                        }
-
-                        let del =
-                            redis_conn.xdel::<_, _, redis::Value>(&stream_name, &[&message.id]);
-
-                        match del {
-                            Ok(_) => {
-                                println!("[DEL - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
-                            }
-                            Err(e) => {
-                                eprintln!("[DEL - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
+    
+                            let del =
+                                redis_conn.xdel::<_, _, redis::Value>(&stream_name, &[&message.id]);
+    
+                            match del {
+                                Ok(_) => {
+                                    println!("[DEL - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
+                                }
+                                Err(e) => {
+                                    eprintln!("[DEL - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        eprintln!("[SENT TO CLIENT - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
-
-                        CLIENT_MESSAGE_STATUS_COLLECTOR.with_label_values(&[
-                            stream.get::<String>("to").unwrap().as_str(),
-                            message.id.as_str(),
-                            "pending",
-                        ]);
-
-                        let claim = redis_conn.xclaim::<_, _, _, _, _, redis::Value>(
-                            &stream_name,
-                            &consumer_group_name,
-                            &consumer_name,
-                            0,
-                            &[&message.id],
-                        );
-
-                        match claim {
-                            Ok(_) => {
-                                println!("[CLAIM - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
-                            }
-                            Err(e) => {
-                                eprintln!("[CLAIM - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
+                        Err(e) => {
+                            eprintln!("[SENT TO CLIENT - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
+    
+                            CLIENT_MESSAGE_STATUS_COLLECTOR.with_label_values(&[
+                                stream.get::<String>("to").unwrap().as_str(),
+                                message.id.as_str(),
+                                "pending",
+                            ]);
+    
+                            let claim = redis_conn.xclaim::<_, _, _, _, _, redis::Value>(
+                                &stream_name,
+                                &consumer_group_name,
+                                &consumer_name,
+                                0,
+                                &[&message.id],
+                            );
+    
+                            match claim {
+                                Ok(_) => {
+                                    println!("[CLAIM - SUCCESS] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}", &message.id, stream_name, consumer_group_name, consumer_name);
+                                }
+                                Err(e) => {
+                                    eprintln!("[CLAIM - ERROR] message-id : {}, stream-name : {}, consumer-group-name : {}, consumer-name : {}, error-message : {}", &message.id, stream_name, consumer_group_name, consumer_name, e);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
+    });
+
+    warp::serve(warp::path!("metrics").and_then(metrics_handler))
+        .run(([0, 0, 0, 0], 5050))
+        .await;
 
     Ok(())
 }
