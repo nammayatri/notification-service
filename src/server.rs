@@ -43,7 +43,7 @@ struct Shared {
 
 impl Shared {
     fn new() -> Self {
-        Shared {
+        Self {
             senders: HashMap::new(),
         }
     }
@@ -65,7 +65,7 @@ struct ChatService {
 
 impl ChatService {
     fn new(shared: Arc<RwLock<Shared>>) -> Self {
-        ChatService { shared }
+        Self { shared }
     }
 }
 
@@ -160,13 +160,15 @@ impl Chat for ChatService {
 }
 
 fn register_custom_metrics() {
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(INCOMING_REQUESTS.clone()))
-        .expect("collector can be registered");
+        .expect("`INCOMING_REQUESTS` collector couldn't be registered");
 
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(CONNECTED_CLIENTS.clone()))
-        .expect("collector can be registered");
+        .expect("`CONNECTED_CLIENTS` collector couldn't be registered");
 }
 
 async fn metrics_handler() -> Result<impl Reply, Rejection> {
@@ -265,8 +267,8 @@ where
 
     fn is_end_stream(&self) -> bool {
         match self {
-            EitherBody::Left(b) => b.is_end_stream(),
-            EitherBody::Right(b) => b.is_end_stream(),
+            Self::Left(b) => b.is_end_stream(),
+            Self::Right(b) => b.is_end_stream(),
         }
     }
 
@@ -275,8 +277,8 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
         match self.get_mut() {
-            EitherBody::Left(b) => Pin::new(b).poll_data(cx).map(map_option_err),
-            EitherBody::Right(b) => Pin::new(b).poll_data(cx).map(map_option_err),
+            Self::Left(b) => Pin::new(b).poll_data(cx).map(map_option_err),
+            Self::Right(b) => Pin::new(b).poll_data(cx).map(map_option_err),
         }
     }
 
@@ -285,8 +287,8 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<http::HeaderMap>, Self::Error>> {
         match self.get_mut() {
-            EitherBody::Left(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
-            EitherBody::Right(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
+            Self::Left(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
+            Self::Right(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
         }
     }
 }
