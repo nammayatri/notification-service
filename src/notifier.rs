@@ -1,5 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
 use chat::{chat_client::ChatClient, Message};
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry};
 use redis::{
@@ -13,19 +11,25 @@ pub mod chat {
     tonic::include_proto!("chat");
 }
 
-lazy_static! {
-    pub static ref CLIENT_MESSAGE_COLLECTOR: IntCounterVec = IntCounterVec::new(
-        Opts::new("client_message", "Client Messages"),
-        &["clientid", "messageid"]
-    )
-    .expect("metric can be created");
-    pub static ref CLIENT_MESSAGE_STATUS_COLLECTOR: HistogramVec = HistogramVec::new(
-        HistogramOpts::new("client_message_status", "Client Messages Status"),
-        &["clientid", "messageid", "status"]
-    )
-    .expect("metric can be created");
-    pub static ref REGISTRY: Registry = Registry::new();
-}
+#[allow(clippy::expect_used)]
+pub static CLIENT_MESSAGE_COLLECTOR: once_cell::sync::Lazy<IntCounterVec> =
+    once_cell::sync::Lazy::new(|| {
+        IntCounterVec::new(
+            Opts::new("client_message", "Client Messages"),
+            &["clientid", "messageid"],
+        )
+        .expect("client message collector metric couldn't be created")
+    });
+#[allow(clippy::expect_used)]
+pub static CLIENT_MESSAGE_STATUS_COLLECTOR: once_cell::sync::Lazy<HistogramVec> =
+    once_cell::sync::Lazy::new(|| {
+        HistogramVec::new(
+            HistogramOpts::new("client_message_status", "Client Messages Status"),
+            &["clientid", "messageid", "status"],
+        )
+        .expect("client message collector metric couldn't be created")
+    });
+pub static REGISTRY: once_cell::sync::Lazy<Registry> = once_cell::sync::Lazy::new(Registry::new);
 
 fn register_custom_metrics() {
     REGISTRY

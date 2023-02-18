@@ -378,7 +378,7 @@ dependencies = [
  "futures",
  "http-body",
  "hyper",
- "lazy_static",
+ "once_cell",
  "prometheus",
  "prost",
  "redis",

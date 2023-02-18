@@ -1,5 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
 use std::{
     collections::HashMap,
     convert::Infallible,
@@ -30,13 +28,18 @@ pub mod chat {
     tonic::include_proto!("chat");
 }
 
-lazy_static! {
-    pub static ref INCOMING_REQUESTS: IntCounter =
-        IntCounter::new("incoming_requests", "Incoming Requests").expect("metric can be created");
-    pub static ref CONNECTED_CLIENTS: IntGauge =
-        IntGauge::new("connected_clients", "Connected Clients").expect("metric can be created");
-    pub static ref REGISTRY: Registry = Registry::new();
-}
+#[allow(clippy::expect_used)]
+pub static INCOMING_REQUESTS: once_cell::sync::Lazy<IntCounter> =
+    once_cell::sync::Lazy::new(|| {
+        IntCounter::new("incoming_requests", "Incoming Requests")
+            .expect("incoming requests metric couldn't be created")
+    });
+#[allow(clippy::expect_used)]
+pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync::Lazy::new(|| {
+    IntGauge::new("connected_clients", "Connected Clients")
+        .expect("connected clients metric couldn't be created")
+});
+pub static REGISTRY: once_cell::sync::Lazy<Registry> = once_cell::sync::Lazy::new(Registry::new);
 
 #[derive(Debug)]
 struct Shared {
