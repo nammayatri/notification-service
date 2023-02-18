@@ -122,17 +122,7 @@ impl Chat for ChatService {
     }
 
     async fn send_message(&self, request: Request<Message>) -> Result<Response<Empty>, Status> {
-        let req_data = request.into_inner();
-        let id = req_data.id;
-        let to_id = req_data.to;
-        let content = req_data.content;
-        let ttl = req_data.ttl;
-        let msg = Message {
-            id,
-            to: to_id,
-            content,
-            ttl,
-        };
+        let msg = request.into_inner();
 
         match self.shared.read().await.broadcast(&msg).await {
             Ok(_) => {
