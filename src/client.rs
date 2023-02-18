@@ -15,7 +15,7 @@ async fn receive_message(
         .into_inner();
 
     while let Some(message) = stream.message().await? {
-        println!("[MESSAGE] = {:?}", message);
+        println!("[MESSAGE] = {message:?}");
     }
 
     Ok(())
@@ -33,11 +33,11 @@ async fn main() {
         match client_res {
             Ok(mut client) => {
                 if let Err(e) = receive_message(&mut client, &name, &id).await {
-                    eprintln!("[Error] {:?}", e);
+                    eprintln!("[Error] {e:?}");
                 }
             }
             Err(e) => {
-                eprintln!("[Error] {}", e);
+                eprintln!("[Error] {e}");
             }
         }
     }

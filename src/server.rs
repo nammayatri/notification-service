@@ -102,7 +102,7 @@ impl Chat for ChatService {
 
         INCOMING_REQUESTS.inc();
         CONNECTED_CLIENTS.inc();
-        println!("[Connected] {}", &name);
+        println!("[Connected] {name}");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<Message, Status>>(128);
 
@@ -140,8 +140,8 @@ impl Chat for ChatService {
             }
             Err(e) => {
                 println!(
-                    "[BROADCAST - ERROR] client-id : {}, error-message: {:?}",
-                    msg.to, e
+                    "[BROADCAST - ERROR] client-id : {}, error-message: {e:?}",
+                    msg.to
                 );
 
                 let redis_client = Client::open("redis://127.0.0.1/").unwrap();
@@ -175,12 +175,12 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 
     let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
-        eprintln!("could not encode custom metrics: {}", e);
+        eprintln!("could not encode custom metrics: {e}");
     };
     let mut res = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("custom metrics could not be from_utf8'd: {}", e);
+            eprintln!("custom metrics could not be converted from bytes: {e}");
             String::default()
         }
     };
@@ -188,12 +188,12 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 
     let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
-        eprintln!("could not encode prometheus metrics: {}", e);
+        eprintln!("could not encode prometheus metrics: {e}");
     };
     let res_custom = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("prometheus metrics could not be from_utf8'd: {}", e);
+            eprintln!("prometheus metrics could not be converted from bytes: {e}");
             String::default()
         }
     };
@@ -208,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     register_custom_metrics();
 
     let addr = "0.0.0.0:5051".parse().unwrap();
-    println!("Server listening on: {}", addr);
+    println!("Server listening on: {addr}");
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
 
