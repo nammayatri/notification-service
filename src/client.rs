@@ -1,10 +1,10 @@
-use chat::chat_client::ChatClient;
-use chat::User;
+use std::{env, error::Error};
+
 use sha256::digest;
-use std::env;
-use std::error::Error;
-use tonic::transport::Channel;
-use tonic::Request;
+use tonic::{transport::Channel, Request};
+
+use self::chat::{chat_client::ChatClient, User};
+
 pub mod chat {
     tonic::include_proto!("chat");
 }

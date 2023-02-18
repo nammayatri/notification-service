@@ -1,33 +1,30 @@
 #[macro_use]
 extern crate lazy_static;
-use std::collections::HashMap;
-use std::convert::Infallible;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
-use futures::TryFutureExt;
 use futures::{
     future::{self, Either},
-    Stream,
+    Stream, TryFutureExt,
 };
-use hyper::http;
-use hyper::{service::make_service_fn, Server};
-use tokio::sync::{mpsc, RwLock};
-use tonic::transport::Server as TonicServer;
-use tonic::{Request, Response, Status};
-
-use redis::{Client, Commands};
-
+use hyper::{http, service::make_service_fn, Server};
 use prometheus::{IntCounter, IntGauge, Registry};
+use redis::{Client, Commands};
+use tokio::sync::{mpsc, RwLock};
+use tonic::{transport::Server as TonicServer, Request, Response, Status};
+use tower::Service;
+use warp::{Filter, Rejection, Reply};
 
-use chat::{
+use self::chat::{
     chat_server::{Chat, ChatServer},
     Empty, Message, User,
 };
-use tower::Service;
-use warp::{Filter, Rejection, Reply};
 
 pub mod chat {
     tonic::include_proto!("chat");
@@ -116,13 +113,13 @@ impl Chat for ChatService {
         let mut redis_conn = redis_client.get_connection().unwrap();
 
         let _result: redis::Value = redis_conn.set(&id, "https://127.0.0.1:5051").unwrap();
-        
+
         self.shared
             .write()
             .await
             .senders
             .insert(id.clone(), stream_tx);
-        
+
         Ok(Response::new(Box::pin(CustomStream(stream_rx))))
     }
 
