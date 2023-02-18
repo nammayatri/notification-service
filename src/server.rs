@@ -11,6 +11,10 @@ use futures::{
     future::{self, Either},
     Stream, TryFutureExt,
 };
+use grpc_rust::chat::{
+    chat_server::{Chat, ChatServer},
+    Empty, Message, User,
+};
 use hyper::{http, service::make_service_fn, Server};
 use prometheus::{IntCounter, IntGauge, Registry};
 use redis::{Client, Commands};
@@ -18,15 +22,6 @@ use tokio::sync::{mpsc, RwLock};
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
 use tower::Service;
 use warp::{Filter, Rejection, Reply};
-
-use self::chat::{
-    chat_server::{Chat, ChatServer},
-    Empty, Message, User,
-};
-
-pub mod chat {
-    tonic::include_proto!("chat");
-}
 
 #[allow(clippy::expect_used)]
 pub static INCOMING_REQUESTS: once_cell::sync::Lazy<IntCounter> =
@@ -94,13 +89,13 @@ impl Drop for CustomStream {
 
 #[tonic::async_trait]
 impl Chat for ChatService {
-    type RecieveMessageStream =
+    type ReceiveMessageStream =
         Pin<Box<dyn Stream<Item = Result<Message, Status>> + Send + Sync + 'static>>;
 
-    async fn recieve_message(
+    async fn receive_message(
         &self,
         request: Request<User>,
-    ) -> Result<Response<Self::RecieveMessageStream>, Status> {
+    ) -> Result<Response<Self::ReceiveMessageStream>, Status> {
         let req_data = request.into_inner();
         let id = req_data.id;
         let name = req_data.name;

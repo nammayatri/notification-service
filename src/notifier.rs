@@ -1,4 +1,4 @@
-use chat::{chat_client::ChatClient, Message};
+use grpc_rust::chat::{chat_client::ChatClient, Message};
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry};
 use redis::{
     streams::{StreamReadOptions, StreamReadReply},
@@ -6,10 +6,6 @@ use redis::{
 };
 use tonic::Request;
 use warp::{Filter, Rejection, Reply};
-
-pub mod chat {
-    tonic::include_proto!("chat");
-}
 
 #[allow(clippy::expect_used)]
 pub static CLIENT_MESSAGE_COLLECTOR: once_cell::sync::Lazy<IntCounterVec> =
