@@ -28,12 +28,15 @@ pub static CLIENT_MESSAGE_STATUS_COLLECTOR: once_cell::sync::Lazy<HistogramVec> 
 pub static REGISTRY: once_cell::sync::Lazy<Registry> = once_cell::sync::Lazy::new(Registry::new);
 
 fn register_custom_metrics() {
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(CLIENT_MESSAGE_COLLECTOR.clone()))
-        .expect("collector can be registered");
+        .expect("CLIENT_MESSAGE_COLLECTOR could not be registered");
+
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(CLIENT_MESSAGE_STATUS_COLLECTOR.clone()))
-        .expect("collector can be registered");
+        .expect("CLIENT_MESSAGE_STATUS_COLLECTOR could not be registered");
 }
 
 async fn metrics_handler() -> Result<impl Reply, Rejection> {
