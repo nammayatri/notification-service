@@ -76,6 +76,8 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 
 ### Android Client
 
+https://user-images.githubusercontent.com/38260510/219955643-10f7221f-4741-411a-9b78-75f384e4f2e1.mp4
+
 1. open `src/client-side-streaming/android-client` in Android Studio and run the application.
 2. application will keep sending messages to client with a delay of 10 seconds.
 
