@@ -10,7 +10,7 @@ scrape_configs:
 
   - job_name: 'grpc-service'
     static_configs:
-      - targets: ['localhost:5051']
+      - targets: ['localhost:50051']
 
   - job_name: 'notification-service'
     static_configs:

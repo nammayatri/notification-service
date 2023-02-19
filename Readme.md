@@ -11,17 +11,6 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 3. **Some Fault Tolerance To Bandwidth Fluctuations** On testing, we observed that when a message is sent to grpc channel for a client and in case the client's wifi is off for a small amount of time then the messages are still sent and when the client’s net is back on they get delivered altogether offering some amount of fault tolerance to network failures.
 4. **Keep-alive health check ping** It has a mechanism of frequent health checks on regular intervals of time so that in case if the bandwidth of the client is gone for long then we can close the connection.
 
-## GRPC Server Side Streaming Architecture
-
-![GRPC Streaming](https://user-images.githubusercontent.com/38260510/219075736-baca827e-6516-4d72-9013-f466fbcd7a13.png)
-
-1. Backend service can keep pushing new messages for the client to the Redis Streams.
-2. Notification servers can keep reading new messages from the streams and discover the GRPC server to which the client is connected to through service discovery and then send the message to the GRPC server.
-3. GRPC server then has to stream the message to the client and return the Success or Failure response to the Notification server based on which the server can acknowledge that message in the stream and move to the next message.
-4. In case if the client has lost network bandwidth, then the health check ping pong could fail and forcefully disconnect the client from the stream.
-5. The messages that were consumed by notification servers but were unable to be sent/acknowledged from the clients. Would be added as Pending messages in the consumer group which could then be retriggered at some regular intervals.
-6. On top of all we can have the right metrics that would help us in debugging the messages that were sent and not sent to the client.
-
 ## gRPC failure handling
 
 1. Connection Backoff – When we do a connection to a backend which fails, it is typically desirable to not retry immediately (to avoid flooding the network or the server with requests) and instead do some form of exponential backoff.
@@ -33,6 +22,17 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 2. We can introduce the right tooling and metrics to help us understand the message success rate and improve further.
 3. On testing, we found that if the client's wifi is turned off then the messages get sent once the client comes back on in some time, so it handles the cases where bandwidth fluctuates and gives us some reliability.
 4. We can also set a keep alive ping that can ask for acknowledgement from clients to be sure the client is not away for too long. If so then, we can forcefully terminate the connection.
+
+## GRPC Server Side Streaming Architecture
+
+![GRPC Streaming](https://user-images.githubusercontent.com/38260510/219075736-baca827e-6516-4d72-9013-f466fbcd7a13.png)
+
+1. Backend service can keep pushing new messages for the client to the Redis Streams.
+2. Notification servers can keep reading new messages from the streams and discover the GRPC server to which the client is connected to through service discovery and then send the message to the GRPC server.
+3. GRPC server then has to stream the message to the client and return the Success or Failure response to the Notification server based on which the server can acknowledge that message in the stream and move to the next message.
+4. In case if the client has lost network bandwidth, then the health check ping pong could fail and forcefully disconnect the client from the stream.
+5. The messages that were consumed by notification servers but were unable to be sent/acknowledged from the clients. Would be added as Pending messages in the consumer group which could then be retriggered at some regular intervals.
+6. On top of all we can have the right metrics that would help us in debugging the messages that were sent and not sent to the client.
 
 ## Setup
 
@@ -77,8 +77,8 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 ### Android Client
 
 1. open `src/client-side-streaming/android-client` in Android Studio and run the application.
-2. application will keep sending messages to client with a delay of 30 seconds.
+2. application will keep sending messages to client with a delay of 10 seconds.
 
 ### [OPTIONAL] Android Client
 
-1. run `cargo run --bin css-client <name>`, client connects to server and starts streaming messages to the server every 3 seconds.
+1. run `cargo run --bin css-client <name>`, client connects to server and starts streaming messages to the server every 10 seconds.

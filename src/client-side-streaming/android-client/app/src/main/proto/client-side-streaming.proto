@@ -5,9 +5,9 @@ option java_package = "com.example.grpc";
 option java_outer_classname = "ChatProto";
 option objc_class_prefix = "CH";
 
-package chat;
+package client_side_streaming;
 
-service Chat {
+service ClientStream {
     rpc SendMessage (stream Message) returns (Empty);
 }
 

@@ -2,16 +2,13 @@ package com.example.grpc;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import android.app.Activity;
 import android.os.AsyncTask;
 import android.os.Bundle;
-import android.text.TextUtils;
 import android.util.Log;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.ref.WeakReference;
-import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -19,7 +16,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
 
-public class ChatActivity extends AppCompatActivity {
+public class StreamActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -29,17 +26,17 @@ public class ChatActivity extends AppCompatActivity {
 
     private interface GrpcRunnable {
         /** Perform a grpcRunnable and return all the logs. */
-        String run(ChatGrpc.ChatBlockingStub blockingStub, ChatGrpc.ChatStub asyncStub, ManagedChannel channel) throws Exception;
+        String run(ClientStreamGrpc.ClientStreamBlockingStub blockingStub, ClientStreamGrpc.ClientStreamStub asyncStub, ManagedChannel channel) throws Exception;
     }
 
     private static class GrpcTask extends AsyncTask<String, Void, String> {
         private final GrpcRunnable grpcRunnable;
         private ManagedChannel channel;
-        private final WeakReference<ChatActivity> activityReference;
+        private final WeakReference<StreamActivity> activityReference;
 
-        GrpcTask(GrpcRunnable grpcRunnable, ChatActivity activity) {
+        GrpcTask(GrpcRunnable grpcRunnable, StreamActivity activity) {
             this.grpcRunnable = grpcRunnable;
-            this.activityReference = new WeakReference<ChatActivity>(activity);
+            this.activityReference = new WeakReference<StreamActivity>(activity);
         }
 
         String tryWithExponentialBackoff(int n, String logs) throws InterruptedException {
@@ -48,12 +45,12 @@ public class ChatActivity extends AppCompatActivity {
                 return logs;
             }
             try {
-                ManagedChannel channel = ManagedChannelBuilder.forAddress("10.0.2.2", 5051).usePlaintext()
+                ManagedChannel channel = ManagedChannelBuilder.forAddress("10.0.2.2", 50051).usePlaintext()
 //                .keepAliveTime(5, TimeUnit.SECONDS)
 //                .keepAliveTimeout(20, TimeUnit.SECONDS)
                         .build();
                 logs += ("\nSuccess!\n" + grpcRunnable.run(
-                                ChatGrpc.newBlockingStub(channel), ChatGrpc.newStub(channel), channel));
+                                ClientStreamGrpc.newBlockingStub(channel), ClientStreamGrpc.newStub(channel), channel));
             } catch (Exception e) {
                 StringWriter sw = new StringWriter();
                 PrintWriter pw = new PrintWriter(sw);
@@ -83,7 +80,7 @@ public class ChatActivity extends AppCompatActivity {
         private Throwable failed;
 
         @Override
-        public String run(ChatGrpc.ChatBlockingStub blockingStub, ChatGrpc.ChatStub asyncStub, ManagedChannel channel)
+        public String run(ClientStreamGrpc.ClientStreamBlockingStub blockingStub, ClientStreamGrpc.ClientStreamStub asyncStub, ManagedChannel channel)
                 throws Exception {
             return sendMessage(asyncStub, channel);
         }
@@ -93,7 +90,7 @@ public class ChatActivity extends AppCompatActivity {
          * features} with a variable delay in between. Prints the statistics when they are sent from the
          * server.
          */
-        private String sendMessage(ChatGrpc.ChatStub asyncStub, ManagedChannel channel) throws InterruptedException, RuntimeException {
+        private String sendMessage(ClientStreamGrpc.ClientStreamStub asyncStub, ManagedChannel channel) throws InterruptedException, RuntimeException {
             final CountDownLatch finishLatch = new CountDownLatch(1);
             Log.i("GRPC", "sendMessage: ");
             StreamObserver<Empty> responseObserver =
@@ -105,7 +102,7 @@ public class ChatActivity extends AppCompatActivity {
 
                         @Override
                         public void onError(Throwable t) {
-                            Log.i("GRPC", "ResponseOnError : " + t.getCause());
+                            Log.i("GRPC", "ResponseOnError : " + t);
                             channel.shutdown();
                             finishLatch.countDown();
                         }

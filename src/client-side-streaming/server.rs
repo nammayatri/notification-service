@@ -172,7 +172,7 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     register_custom_metrics();
 
-    let addr = "127.0.0.1:5051".parse().unwrap();
+    let addr = "127.0.0.1:50051".parse().unwrap();
     println!("Server listening on: {}", addr);
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
@@ -187,7 +187,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             future::ok::<_, Infallible>(tower::service_fn(
                 move |req: hyper::Request<hyper::Body>| {
-                    println!("{:?}", req);
                     match req.uri().path() {
                         "/metrics" => Either::Left(
                             warp.call(req)

@@ -28,7 +28,7 @@ async fn main() {
     let id = sha256::digest(name.as_str());
 
     loop {
-        let client_res = ServerStreamClient::connect("https://127.0.0.1:5051").await;
+        let client_res = ServerStreamClient::connect("https://127.0.0.1:50051").await;
 
         match client_res {
             Ok(mut client) => {

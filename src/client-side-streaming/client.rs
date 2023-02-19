@@ -13,7 +13,7 @@ async fn send_message(
 ) -> Result<(), Box<dyn Error>> {
     let id = id.clone();
     let request = async_stream::stream! {
-        let mut interval = time::interval(Duration::from_secs(3));
+        let mut interval = time::interval(Duration::from_secs(10));
         loop {
             let time = interval.tick().await;
             let message = Message {

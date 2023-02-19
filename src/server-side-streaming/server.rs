@@ -110,7 +110,7 @@ impl ServerStream for ServerStreamService {
         println!("[REDIS CONNECTION]: redis://127.0.0.1/");
         let mut redis_conn = redis_client.get_connection().unwrap();
 
-        let _result: redis::Value = redis_conn.set(&id, "https://127.0.0.1:5051").unwrap();
+        let _result: redis::Value = redis_conn.set(&id, "https://127.0.0.1:50051").unwrap();
 
         self.shared
             .write()
@@ -199,7 +199,7 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     register_custom_metrics();
 
-    let addr = "0.0.0.0:5051".parse().unwrap();
+    let addr = "0.0.0.0:50051".parse().unwrap();
     println!("Server listening on: {addr}");
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
