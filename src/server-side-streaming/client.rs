@@ -1,10 +1,10 @@
 use std::{env, error::Error};
 
-use grpc_rust::chat::{chat_client::ChatClient, User};
+use grpc_rust::server_side_streaming::{server_stream_client::ServerStreamClient, User};
 use tonic::{transport::Channel, Request};
 
 async fn receive_message(
-    client: &mut ChatClient<Channel>,
+    client: &mut ServerStreamClient<Channel>,
     name: &str,
     id: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -28,7 +28,7 @@ async fn main() {
     let id = sha256::digest(name.as_str());
 
     loop {
-        let client_res = ChatClient::connect("https://127.0.0.1:5051").await;
+        let client_res = ServerStreamClient::connect("https://127.0.0.1:5051").await;
 
         match client_res {
             Ok(mut client) => {

@@ -1,4 +1,4 @@
-use grpc_rust::chat::{chat_client::ChatClient, Message};
+use grpc_rust::server_side_streaming::{server_stream_client::ServerStreamClient, Message};
 use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry};
 use redis::{
     streams::{StreamReadOptions, StreamReadReply},
@@ -126,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         server_ip
                     );
 
-                    let mut server = ChatClient::connect(server_ip).await.unwrap();
+                    let mut server = ServerStreamClient::connect(server_ip).await.unwrap();
                     match server.send_message(Request::new(message.clone())).await {
                         Ok(_) => {
                             println!(

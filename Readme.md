@@ -11,7 +11,7 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 3. **Some Fault Tolerance To Bandwidth Fluctuations** On testing, we observed that when a message is sent to grpc channel for a client and in case the client's wifi is off for a small amount of time then the messages are still sent and when the client’s net is back on they get delivered altogether offering some amount of fault tolerance to network failures.
 4. **Keep-alive health check ping** It has a mechanism of frequent health checks on regular intervals of time so that in case if the bandwidth of the client is gone for long then we can close the connection.
 
-## Architecture
+## GRPC Server Side Streaming Architecture
 
 ![GRPC Streaming](https://user-images.githubusercontent.com/38260510/219075736-baca827e-6516-4d72-9013-f466fbcd7a13.png)
 
@@ -21,6 +21,11 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 4. In case if the client has lost network bandwidth, then the health check ping pong could fail and forcefully disconnect the client from the stream.
 5. The messages that were consumed by notification servers but were unable to be sent/acknowledged from the clients. Would be added as Pending messages in the consumer group which could then be retriggered at some regular intervals.
 6. On top of all we can have the right metrics that would help us in debugging the messages that were sent and not sent to the client.
+
+## gRPC failure handling
+
+1. Connection Backoff – When we do a connection to a backend which fails, it is typically desirable to not retry immediately (to avoid flooding the network or the server with requests) and instead do some form of exponential backoff.
+2. Keepalive – The keepalive ping is a way to check if a channel is currently working by sending HTTP2 pings over the transport. It is sent periodically, and if the ping is not acknowledged by the peer within a certain timeout period, the transport is disconnected.
 
 ## Advantages
 
@@ -34,16 +39,16 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 ### GRPC Server
 
 1. install prometheus and run `prometheus` in root directory, it will start prometheus server on **localhost:9090**.
-2. run `cargo run --bin server`, it starts server on **localhost:5051**.
+2. run `cargo run --bin sss-server`, it starts server on **localhost:5051**.
 
 ### Client
 
-1. run `cargo run --bin client`, client connects to server and the stream starts.
+1. run `cargo run --bin sss-client <name>`, client connects to server and the stream starts.
 2. Also, client add it's id to the Redis Service Discovery (clientId : serverIp).
 
 ### Notification Server
 
-1. run `cargo run --bin notifier`, notifier starts listening to the new messages from redis-streams.
+1. run `cargo run --bin sss-notifier`, notifier starts listening to the new messages from redis-streams.
 2. For every new message it identifies the grpc-server to which the client is connected to through redis service discovery.
 3. It then send the message to the correct GRPC server, which then broadcasts it to the client down the stream.
 
@@ -51,3 +56,29 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 
 1. create the required redis stream and it's consumer, `XGROUP CREATE chat-stream-1 chat-group-1 $ MKSTREAM`
 2. add new message to the stream, `XADD chat-stream-1 * content helloworld to 4d5548b231641d024b901f321fe8c1265dcb38bd2d514d2ee23bc55ab124f676 ttl 36000`
+
+## GRPC Client Side Streaming Architecture
+
+1. The client connects to the GRPC server and keeps sending location updates to the server on the channel.
+2. Server then send the location updates for that client to the Backend service via HTTP call to an Rest API.
+3. Prometheus is integrated for continus metrics of the following parameters:
+    - Total No. of Incoming Client Connections.
+    - Total No. of Connected Clients.
+    - Total No. of Disconnected Clients.
+    - Status of Messages Recieved by the Clients.
+
+## Setup
+
+### GRPC Server
+
+1. install prometheus and run `prometheus` in root directory, it will start prometheus server on **localhost:9090**.
+2. run `cargo run --bin css-server`, it starts server on **localhost:5051**.
+
+### Android Client
+
+1. open `src/client-side-streaming/android-client` in Android Studio and run the application.
+2. application will keep sending messages to client with a delay of 30 seconds.
+
+### [OPTIONAL] Android Client
+
+1. run `cargo run --bin css-client <name>`, client connects to server and starts streaming messages to the server every 3 seconds.

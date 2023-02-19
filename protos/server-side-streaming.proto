@@ -1,7 +1,7 @@
 syntax = "proto3";
-package chat;
+package server_side_streaming;
 
-service Chat {
+service ServerStream {
     rpc ReceiveMessage (User) returns (stream Message);
     rpc SendMessage (Message) returns (Empty);
 }

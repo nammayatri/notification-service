@@ -1,5 +1,5 @@
-pub mod chat {
-    tonic::include_proto!("chat");
+pub mod server_side_streaming {
+    tonic::include_proto!("server_side_streaming");
 
     impl User {
         pub fn new(id: &str, name: &str) -> Self {
@@ -9,4 +9,8 @@ pub mod chat {
             }
         }
     }
+}
+
+pub mod client_side_streaming {
+    tonic::include_proto!("client_side_streaming");
 }

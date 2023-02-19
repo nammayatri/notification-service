@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.example.grpc";
+option java_outer_classname = "ChatProto";
+option objc_class_prefix = "CH";
+
+package chat;
+
+service Chat {
+    rpc SendMessage (stream Message) returns (Empty);
+}
+
+message Message {
+    string id = 1;
+    string clientId = 2;
+    Location location = 3;
+}
+
+message Location {
+    string lat = 1;
+    string long = 2;
+}
+
+message Empty {}

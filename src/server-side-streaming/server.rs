@@ -11,8 +11,8 @@ use futures::{
     future::{self, Either},
     Stream, TryFutureExt,
 };
-use grpc_rust::chat::{
-    chat_server::{Chat, ChatServer},
+use grpc_rust::server_side_streaming::{
+    server_stream_server::{ServerStream, ServerStreamServer},
     Empty, Message, User,
 };
 use hyper::{http, service::make_service_fn, Server};
@@ -59,11 +59,11 @@ impl Shared {
 }
 
 #[derive(Debug)]
-struct ChatService {
+struct ServerStreamService {
     shared: Arc<RwLock<Shared>>,
 }
 
-impl ChatService {
+impl ServerStreamService {
     fn new(shared: Arc<RwLock<Shared>>) -> Self {
         Self { shared }
     }
@@ -88,7 +88,7 @@ impl Drop for CustomStream {
 }
 
 #[tonic::async_trait]
-impl Chat for ChatService {
+impl ServerStream for ServerStreamService {
     type ReceiveMessageStream =
         Pin<Box<dyn Stream<Item = Result<Message, Status>> + Send + Sync + 'static>>;
 
@@ -208,13 +208,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Server::bind(&addr)
         .serve(make_service_fn(move |_| {
-            let chat_service = ChatService::new(shared.clone());
+            let server_stream_service = ServerStreamService::new(shared.clone());
 
             let mut tonic = TonicServer::builder()
                 .tcp_keepalive(Some(Duration::from_secs(1)))
                 .http2_keepalive_interval(Some(Duration::from_secs(30)))
                 .http2_keepalive_timeout(Some(Duration::from_secs(5)))
-                .add_service(ChatServer::new(chat_service))
+                .add_service(ServerStreamServer::new(server_stream_service))
                 .into_service();
 
             future::ok::<_, Infallible>(tower::service_fn(

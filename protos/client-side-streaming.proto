@@ -1,0 +1,19 @@
+syntax = "proto3";
+package client_side_streaming;
+
+service ClientStream {
+    rpc SendMessage (stream Message) returns (Empty);
+}
+
+message Message {
+    string id = 1;
+    string clientId = 2;
+    Location location = 3;
+}
+
+message Location {
+    string lat = 1;
+    string long = 2;
+}
+
+message Empty {}
