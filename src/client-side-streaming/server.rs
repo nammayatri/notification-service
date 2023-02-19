@@ -186,20 +186,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into_service();
 
             future::ok::<_, Infallible>(tower::service_fn(
-                move |req: hyper::Request<hyper::Body>| {
-                    match req.uri().path() {
-                        "/metrics" => Either::Left(
-                            warp.call(req)
-                                .map_ok(|res| res.map(EitherBody::Left))
-                                .map_err(Error::from),
-                        ),
-                        _ => Either::Right(
-                            tonic
-                                .call(req)
-                                .map_ok(|res| res.map(EitherBody::Right))
-                                .map_err(Error::from),
-                        ),
-                    }
+                move |req: hyper::Request<hyper::Body>| match req.uri().path() {
+                    "/metrics" => Either::Left(
+                        warp.call(req)
+                            .map_ok(|res| res.map(EitherBody::Left))
+                            .map_err(Error::from),
+                    ),
+                    _ => Either::Right(
+                        tonic
+                            .call(req)
+                            .map_ok(|res| res.map(EitherBody::Right))
+                            .map_err(Error::from),
+                    ),
                 },
             ))
         }))
