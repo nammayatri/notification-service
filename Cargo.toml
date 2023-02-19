@@ -40,6 +40,9 @@ sha256 = "1.1.2"
 tokio = { version = "1.25.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tonic = "0.8.3"
 tower = "0.4.13"
+tracing = "0.1.37"
+tracing-appender = "0.2.2"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter", "registry"] }
 warp = "0.3.3"
 
 [build-dependencies]

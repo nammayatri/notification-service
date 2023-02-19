@@ -6,12 +6,13 @@ use grpc_rust::client_side_streaming::{
 use sha256::digest;
 use tokio::time;
 use tonic::transport::Channel;
+use tracing::{error, info};
 
 async fn send_message(
     client: &mut ClientStreamClient<Channel>,
-    id: &String,
+    id: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let id = id.clone();
+    let id = id.to_owned();
     let request = async_stream::stream! {
         let mut interval = time::interval(Duration::from_secs(10));
         loop {
@@ -31,9 +32,9 @@ async fn send_message(
 
     match client.send_message(request).await {
         Ok(response) => {
-            println!("[DISCONNECTED] {:?}", response.into_inner())
+            info!(tag = "[DISCONNECTED]", response = ?response.into_inner())
         }
-        Err(e) => eprintln!("[DISCONNECTED - ERROR] {:?}", e),
+        Err(error) => error!(tag = "[DISCONNECTED - ERROR]", %error),
     }
 
     Ok(())
@@ -41,6 +42,8 @@ async fn send_message(
 
 #[tokio::main]
 async fn main() {
+    let _guard = grpc_rust::setup_tracing(std::env!("CARGO_BIN_NAME"));
+
     let args: Vec<String> = env::args().collect();
     let name = args[1].clone();
     let id = digest(name.as_str());
@@ -50,12 +53,12 @@ async fn main() {
 
     match client_res {
         Ok(mut client) => {
-            if let Err(e) = send_message(&mut client, &id).await {
-                eprintln!("[ERROR] {:?}", e);
+            if let Err(error) = send_message(&mut client, &id).await {
+                error!(tag = "[ERROR]", %error);
             }
         }
-        Err(e) => {
-            eprintln!("[ERROR] {}", e);
+        Err(error) => {
+            error!(tag = "[ERROR]", %error);
         }
     }
     // }

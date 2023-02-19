@@ -15,10 +15,10 @@ use grpc_rust::client_side_streaming::{
 };
 use hyper::{header::CONTENT_TYPE, http, service::make_service_fn, Server};
 use prometheus::{HistogramOpts, HistogramVec, IntCounter, IntGauge, Registry};
-use reqwest;
 use serde::{Deserialize, Serialize};
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
 use tower::Service;
+use tracing::{error, info};
 use warp::{Filter, Rejection, Reply};
 
 #[allow(clippy::expect_used)]
@@ -44,24 +44,28 @@ pub static CLIENT_MESSAGE_STATUS_COLLECTOR: once_cell::sync::Lazy<HistogramVec> 
 pub static REGISTRY: once_cell::sync::Lazy<Registry> = once_cell::sync::Lazy::new(Registry::new);
 
 fn register_custom_metrics() {
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(INCOMING_REQUESTS.clone()))
-        .expect("collector can be registered");
+        .expect("`INCOMING_REQUESTS` collector couldn't be registered");
 
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(CONNECTED_CLIENTS.clone()))
-        .expect("collector can be registered");
+        .expect("`CONNECTED_CLIENTS` collector couldn't be registered");
+
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(CLIENT_MESSAGE_STATUS_COLLECTOR.clone()))
-        .expect("collector can be registered");
+        .expect("`CLIENT_MESSAGE_STATUS_COLLECTOR` collector couldn't be registered");
 }
 
 #[derive(Debug)]
 struct ClientStreamService {}
 
 impl ClientStreamService {
-    fn new() -> ClientStreamService {
-        ClientStreamService {}
+    fn new() -> Self {
+        Self {}
     }
 }
 
@@ -89,7 +93,7 @@ impl ClientStream for ClientStreamService {
     ) -> Result<Response<Empty>, Status> {
         INCOMING_REQUESTS.inc();
         CONNECTED_CLIENTS.inc();
-        println!("[CONNECTED]");
+        info!("[CONNECTED]");
 
         let mut stream = request.into_inner();
 
@@ -117,18 +121,20 @@ impl ClientStream for ClientStreamService {
             match response.status() {
                 reqwest::StatusCode::CREATED => {
                     match response.json::<APIResponse>().await {
-                        Ok(parsed) => println!("Success! {:?}", parsed),
-                        Err(_) => println!("Hm, the response didn't match the shape we expected."),
+                        Ok(response) => info!(?response, "Success!"),
+                        Err(error) => {
+                            error!(%error, "Hm, the response didn't match the shape we expected.")
+                        }
                     };
                 }
                 status => {
-                    panic!("Uh oh! Something unexpected happened: {:?}", status);
+                    error!(%status, "Received unexpected status code");
                 }
             };
         }
 
         CONNECTED_CLIENTS.dec();
-        println!("[DISCONNECTED]");
+        info!("[DISCONNECTED]");
 
         Ok(Response::new(Empty::default()))
     }
@@ -139,26 +145,26 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
     let encoder = prometheus::TextEncoder::new();
 
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
-        eprintln!("could not encode custom metrics: {}", e);
+    if let Err(error) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
+        error!(%error, "could not encode custom metrics");
     };
     let mut res = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("custom metrics could not be from_utf8'd: {}", e);
+        Err(error) => {
+            error!(%error, "custom metrics could not be converted from bytes");
             String::default()
         }
     };
     buffer.clear();
 
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
-        eprintln!("could not encode prometheus metrics: {}", e);
+    if let Err(error) = encoder.encode(&prometheus::gather(), &mut buffer) {
+        error!(%error, "could not encode prometheus metrics");
     };
     let res_custom = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("prometheus metrics could not be from_utf8'd: {}", e);
+        Err(error) => {
+            error!(%error, "prometheus metrics could not be converted from bytes");
             String::default()
         }
     };
@@ -170,10 +176,12 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = grpc_rust::setup_tracing(std::env!("CARGO_BIN_NAME"));
+
     register_custom_metrics();
 
     let addr = "127.0.0.1:50051".parse().unwrap();
-    println!("Server listening on: {}", addr);
+    info!("Server listening on: {addr}");
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
 
@@ -225,8 +233,8 @@ where
 
     fn is_end_stream(&self) -> bool {
         match self {
-            EitherBody::Left(b) => b.is_end_stream(),
-            EitherBody::Right(b) => b.is_end_stream(),
+            Self::Left(b) => b.is_end_stream(),
+            Self::Right(b) => b.is_end_stream(),
         }
     }
 
@@ -235,8 +243,8 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
         match self.get_mut() {
-            EitherBody::Left(b) => Pin::new(b).poll_data(cx).map(map_option_err),
-            EitherBody::Right(b) => Pin::new(b).poll_data(cx).map(map_option_err),
+            Self::Left(b) => Pin::new(b).poll_data(cx).map(map_option_err),
+            Self::Right(b) => Pin::new(b).poll_data(cx).map(map_option_err),
         }
     }
 
@@ -245,8 +253,8 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<http::HeaderMap>, Self::Error>> {
         match self.get_mut() {
-            EitherBody::Left(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
-            EitherBody::Right(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
+            Self::Left(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
+            Self::Right(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
         }
     }
 }

@@ -21,6 +21,7 @@ use redis::{Client, Commands};
 use tokio::sync::{mpsc, RwLock};
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
 use tower::Service;
+use tracing::{error, info};
 use warp::{Filter, Rejection, Reply};
 
 #[allow(clippy::expect_used)]
@@ -83,7 +84,7 @@ impl Stream for CustomStream {
 impl Drop for CustomStream {
     fn drop(&mut self) {
         CONNECTED_CLIENTS.dec();
-        println!("[Disconnected]");
+        info!("[Disconnected]");
     }
 }
 
@@ -102,12 +103,12 @@ impl ServerStream for ServerStreamService {
 
         INCOMING_REQUESTS.inc();
         CONNECTED_CLIENTS.inc();
-        println!("[Connected] {name}");
+        info!("[Connected] {name}");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<Message, Status>>(128);
 
         let redis_client = Client::open("redis://127.0.0.1/").unwrap();
-        println!("[REDIS CONNECTION]: redis://127.0.0.1/");
+        info!(tag = "[REDIS CONNECTION]", "redis://127.0.0.1/");
         let mut redis_conn = redis_client.get_connection().unwrap();
 
         let _result: redis::Value = redis_conn.set(&id, "https://127.0.0.1:50051").unwrap();
@@ -126,16 +127,13 @@ impl ServerStream for ServerStreamService {
 
         match self.shared.read().await.broadcast(&msg).await {
             Ok(_) => {
-                println!("[BROADCAST - SUCCESS] client-id : {}", msg.to);
+                info!(tag = "[BROADCAST - SUCCESS]", client_id = %msg.to);
             }
-            Err(e) => {
-                println!(
-                    "[BROADCAST - ERROR] client-id : {}, error-message: {e:?}",
-                    msg.to
-                );
+            Err(_) => {
+                error!(tag = "[BROADCAST - ERROR]", client_id = %msg.to);
 
                 let redis_client = Client::open("redis://127.0.0.1/").unwrap();
-                println!("[REDIS CONNECTION]: redis://127.0.0.1/");
+                info!(tag = "[REDIS CONNECTION]", "redis://127.0.0.1/");
                 let mut redis_conn = redis_client.get_connection().unwrap();
 
                 // self.shared.write().await.senders.remove(&msg.to);
@@ -166,26 +164,26 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
     let encoder = prometheus::TextEncoder::new();
 
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
-        eprintln!("could not encode custom metrics: {e}");
+    if let Err(error) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
+        error!(%error, "could not encode custom metrics");
     };
     let mut res = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("custom metrics could not be converted from bytes: {e}");
+        Err(error) => {
+            error!(%error, "custom metrics could not be converted from bytes");
             String::default()
         }
     };
     buffer.clear();
 
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
-        eprintln!("could not encode prometheus metrics: {e}");
+    if let Err(error) = encoder.encode(&prometheus::gather(), &mut buffer) {
+        error!(%error, "could not encode prometheus metrics");
     };
     let res_custom = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("prometheus metrics could not be converted from bytes: {e}");
+        Err(error) => {
+            error!(%error, "prometheus metrics could not be converted from bytes");
             String::default()
         }
     };
@@ -197,10 +195,12 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = grpc_rust::setup_tracing(std::env!("CARGO_BIN_NAME"));
+
     register_custom_metrics();
 
     let addr = "0.0.0.0:50051".parse().unwrap();
-    println!("Server listening on: {addr}");
+    info!("Server listening on: {addr}");
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
 
