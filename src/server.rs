@@ -11,6 +11,10 @@ use futures::{
     future::{self, Either},
     Stream, TryFutureExt,
 };
+use grpc_rust::chat::{
+    chat_server::{Chat, ChatServer},
+    Empty, Message, User,
+};
 use hyper::{http, service::make_service_fn, Server};
 use prometheus::{IntCounter, IntGauge, Registry};
 use redis::{Client, Commands};
@@ -18,15 +22,6 @@ use tokio::sync::{mpsc, RwLock};
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
 use tower::Service;
 use warp::{Filter, Rejection, Reply};
-
-use self::chat::{
-    chat_server::{Chat, ChatServer},
-    Empty, Message, User,
-};
-
-pub mod chat {
-    tonic::include_proto!("chat");
-}
 
 #[allow(clippy::expect_used)]
 pub static INCOMING_REQUESTS: once_cell::sync::Lazy<IntCounter> =
@@ -48,7 +43,7 @@ struct Shared {
 
 impl Shared {
     fn new() -> Self {
-        Shared {
+        Self {
             senders: HashMap::new(),
         }
     }
@@ -70,7 +65,7 @@ struct ChatService {
 
 impl ChatService {
     fn new(shared: Arc<RwLock<Shared>>) -> Self {
-        ChatService { shared }
+        Self { shared }
     }
 }
 
@@ -94,20 +89,20 @@ impl Drop for CustomStream {
 
 #[tonic::async_trait]
 impl Chat for ChatService {
-    type RecieveMessageStream =
+    type ReceiveMessageStream =
         Pin<Box<dyn Stream<Item = Result<Message, Status>> + Send + Sync + 'static>>;
 
-    async fn recieve_message(
+    async fn receive_message(
         &self,
         request: Request<User>,
-    ) -> Result<Response<Self::RecieveMessageStream>, Status> {
+    ) -> Result<Response<Self::ReceiveMessageStream>, Status> {
         let req_data = request.into_inner();
         let id = req_data.id;
         let name = req_data.name;
 
         INCOMING_REQUESTS.inc();
         CONNECTED_CLIENTS.inc();
-        println!("[Connected] {}", &name);
+        println!("[Connected] {name}");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<Message, Status>>(128);
 
@@ -127,17 +122,7 @@ impl Chat for ChatService {
     }
 
     async fn send_message(&self, request: Request<Message>) -> Result<Response<Empty>, Status> {
-        let req_data = request.into_inner();
-        let id = req_data.id;
-        let to_id = req_data.to;
-        let content = req_data.content;
-        let ttl = req_data.ttl;
-        let msg = Message {
-            id,
-            to: to_id,
-            content,
-            ttl,
-        };
+        let msg = request.into_inner();
 
         match self.shared.read().await.broadcast(&msg).await {
             Ok(_) => {
@@ -145,8 +130,8 @@ impl Chat for ChatService {
             }
             Err(e) => {
                 println!(
-                    "[BROADCAST - ERROR] client-id : {}, error-message: {:?}",
-                    msg.to, e
+                    "[BROADCAST - ERROR] client-id : {}, error-message: {e:?}",
+                    msg.to
                 );
 
                 let redis_client = Client::open("redis://127.0.0.1/").unwrap();
@@ -165,13 +150,15 @@ impl Chat for ChatService {
 }
 
 fn register_custom_metrics() {
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(INCOMING_REQUESTS.clone()))
-        .expect("collector can be registered");
+        .expect("`INCOMING_REQUESTS` collector couldn't be registered");
 
+    #[allow(clippy::expect_used)]
     REGISTRY
         .register(Box::new(CONNECTED_CLIENTS.clone()))
-        .expect("collector can be registered");
+        .expect("`CONNECTED_CLIENTS` collector couldn't be registered");
 }
 
 async fn metrics_handler() -> Result<impl Reply, Rejection> {
@@ -180,12 +167,12 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 
     let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
-        eprintln!("could not encode custom metrics: {}", e);
+        eprintln!("could not encode custom metrics: {e}");
     };
     let mut res = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("custom metrics could not be from_utf8'd: {}", e);
+            eprintln!("custom metrics could not be converted from bytes: {e}");
             String::default()
         }
     };
@@ -193,12 +180,12 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 
     let mut buffer = Vec::new();
     if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
-        eprintln!("could not encode prometheus metrics: {}", e);
+        eprintln!("could not encode prometheus metrics: {e}");
     };
     let res_custom = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("prometheus metrics could not be from_utf8'd: {}", e);
+            eprintln!("prometheus metrics could not be converted from bytes: {e}");
             String::default()
         }
     };
@@ -213,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     register_custom_metrics();
 
     let addr = "0.0.0.0:5051".parse().unwrap();
-    println!("Server listening on: {}", addr);
+    println!("Server listening on: {addr}");
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
 
@@ -270,8 +257,8 @@ where
 
     fn is_end_stream(&self) -> bool {
         match self {
-            EitherBody::Left(b) => b.is_end_stream(),
-            EitherBody::Right(b) => b.is_end_stream(),
+            Self::Left(b) => b.is_end_stream(),
+            Self::Right(b) => b.is_end_stream(),
         }
     }
 
@@ -280,8 +267,8 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
         match self.get_mut() {
-            EitherBody::Left(b) => Pin::new(b).poll_data(cx).map(map_option_err),
-            EitherBody::Right(b) => Pin::new(b).poll_data(cx).map(map_option_err),
+            Self::Left(b) => Pin::new(b).poll_data(cx).map(map_option_err),
+            Self::Right(b) => Pin::new(b).poll_data(cx).map(map_option_err),
         }
     }
 
@@ -290,8 +277,8 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<http::HeaderMap>, Self::Error>> {
         match self.get_mut() {
-            EitherBody::Left(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
-            EitherBody::Right(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
+            Self::Left(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
+            Self::Right(b) => Pin::new(b).poll_trailers(cx).map_err(Into::into),
         }
     }
 }
