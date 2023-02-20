@@ -5,6 +5,7 @@ use redis::{
     Client, Commands,
 };
 use tonic::Request;
+use tracing::{error, info};
 use warp::{Filter, Rejection, Reply};
 
 #[allow(clippy::expect_used)]
@@ -44,26 +45,26 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
     let encoder = prometheus::TextEncoder::new();
 
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
-        eprintln!("could not encode custom metrics: {e}");
+    if let Err(error) = encoder.encode(&REGISTRY.gather(), &mut buffer) {
+        error!(%error, "could not encode custom metrics");
     };
     let mut res = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("custom metrics could not be from_utf8'd: {e}");
+        Err(error) => {
+            error!(%error, "custom metrics could not be converted from bytes");
             String::default()
         }
     };
     buffer.clear();
 
     let mut buffer = Vec::new();
-    if let Err(e) = encoder.encode(&prometheus::gather(), &mut buffer) {
-        eprintln!("could not encode prometheus metrics: {e}");
+    if let Err(error) = encoder.encode(&prometheus::gather(), &mut buffer) {
+        error!(%error, "could not encode prometheus metrics");
     };
     let res_custom = match String::from_utf8(buffer.clone()) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("prometheus metrics could not be from_utf8'd: {e}");
+        Err(error) => {
+            error!(%error, "prometheus metrics could not be converted from bytes");
             String::default()
         }
     };
@@ -75,8 +76,10 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = grpc_rust::setup_tracing(std::env!("CARGO_BIN_NAME"));
+
     let redis_client = Client::open("redis://127.0.0.1/")?;
-    println!("[REDIS CONNECTION]: redis://127.0.0.1/");
+    info!(tag = "[REDIS CONNECTION]", "redis://127.0.0.1/");
 
     register_custom_metrics();
 
@@ -109,32 +112,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         message.id.as_str(),
                     ]);
 
-                    println!(
-                        "[XREAD] message-id : {}, \
-                         stream-name : {stream_name}, \
-                         consumer-group-name : {consumer_group_name}, \
-                         consumer-name : {consumer_name}",
-                        &message.id,
+                    info!(
+                        tag = "[XREAD]",
+                        message_id = %message.id,
+                        %stream_name,
+                        %consumer_group_name,
+                        %consumer_name
                     );
 
                     let server_ip: String =
                         redis_conn.get(stream.get::<String>("to").unwrap()).unwrap();
 
-                    println!(
-                        "[SERVER - CLIENT] {} : {}",
-                        stream.get::<String>("to").unwrap(),
-                        server_ip
+                    info!(
+                        tag = "[SERVER - CLIENT]",
+                        client_id = stream.get::<String>("to").unwrap(),
+                        %server_ip
                     );
 
                     let mut server = ServerStreamClient::connect(server_ip).await.unwrap();
                     match server.send_message(Request::new(message.clone())).await {
                         Ok(_) => {
-                            println!(
-                                "[SENT TO CLIENT - SUCCESS] message-id : {}, \
-                                 stream-name : {stream_name}, \
-                                 consumer-group-name : {consumer_group_name}, \
-                                 consumer-name : {consumer_name}",
-                                &message.id
+                            info!(
+                                tag = "[SENT TO CLIENT - SUCCESS]",
+                                message_id = %message.id,
+                                %stream_name,
+                                %consumer_group_name,
+                                %consumer_name
                             );
 
                             let ack = redis_conn.xack::<_, _, _, redis::Value>(
@@ -151,22 +154,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             match ack {
                                 Ok(_) => {
-                                    println!(
-                                        "[ACK - SUCCESS] message-id : {}, \
-                                         stream-name : {stream_name}, \
-                                         consumer-group-name : {consumer_group_name}, \
-                                         consumer-name : {consumer_name}",
-                                        &message.id
+                                    info!(
+                                        tag = "[ACK - SUCCESS]",
+                                        message_id = %message.id,
+                                        %stream_name,
+                                        %consumer_group_name,
+                                        %consumer_name
                                     );
                                 }
-                                Err(e) => {
-                                    eprintln!(
-                                        "[ACK - ERROR] message-id : {}, \
-                                         stream-name : {stream_name}, \
-                                         consumer-group-name : {consumer_group_name}, \
-                                         consumer-name : {consumer_name}, \
-                                         error-message : {e}",
-                                        &message.id
+                                Err(error) => {
+                                    error!(
+                                        tag = "[ACK - ERROR]",
+                                        message_id = %message.id,
+                                        %stream_name,
+                                        %consumer_group_name,
+                                        %consumer_name,
+                                        %error
                                     );
                                 }
                             }
@@ -176,34 +179,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             match del {
                                 Ok(_) => {
-                                    println!(
-                                        "[DEL - SUCCESS] message-id : {}, \
-                                         stream-name : {stream_name}, \
-                                         consumer-group-name : {consumer_group_name}, \
-                                         consumer-name : {consumer_name}",
-                                        &message.id
+                                    info!(
+                                        tag = "[DEL - SUCCESS]",
+                                        message_id = %message.id,
+                                        %stream_name,
+                                        %consumer_group_name,
+                                        %consumer_name
                                     );
                                 }
-                                Err(e) => {
-                                    eprintln!(
-                                        "[DEL - ERROR] message-id : {}, \
-                                         stream-name : {stream_name}, \
-                                         consumer-group-name : {consumer_group_name}, \
-                                         consumer-name : {consumer_name}, \
-                                         error-message : {e}",
-                                        &message.id
+                                Err(error) => {
+                                    error!(
+                                        tag = "[DEL - ERROR]",
+                                        message_id = %message.id,
+                                        %stream_name,
+                                        %consumer_group_name,
+                                        %consumer_name,
+                                        %error
                                     );
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "[SENT TO CLIENT - ERROR] message-id : {}, \
-                                 stream-name : {stream_name}, \
-                                 consumer-group-name : {consumer_group_name}, \
-                                 consumer-name : {consumer_name}, \
-                                 error-message : {e}",
-                                &message.id
+                        Err(error) => {
+                            error!(
+                                tag = "[SENT TO CLIENT - ERROR]",
+                                message_id = %message.id,
+                                %stream_name,
+                                %consumer_group_name,
+                                %consumer_name,
+                                %error
                             );
 
                             CLIENT_MESSAGE_STATUS_COLLECTOR.with_label_values(&[
@@ -222,22 +225,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             match claim {
                                 Ok(_) => {
-                                    println!(
-                                        "[CLAIM - SUCCESS] message-id : {}, \
-                                         stream-name : {stream_name}, \
-                                         consumer-group-name : {consumer_group_name}, \
-                                         consumer-name : {consumer_name}",
-                                        &message.id
+                                    info!(
+                                        tag = "[CLAIM - SUCCESS]",
+                                        message_id = %message.id,
+                                        %stream_name,
+                                        %consumer_group_name,
+                                        %consumer_name
                                     );
                                 }
-                                Err(e) => {
-                                    eprintln!(
-                                        "[CLAIM - ERROR] message-id : {}, \
-                                         stream-name : {stream_name}, \
-                                         consumer-group-name : {consumer_group_name}, \
-                                         consumer-name : {consumer_name}, \
-                                         error-message : {e}",
-                                        &message.id
+                                Err(error) => {
+                                    error!(
+                                        tag = "[CLAIM - ERROR]",
+                                        message_id = %message.id,
+                                        %stream_name,
+                                        %consumer_group_name,
+                                        %consumer_name,
+                                        %error
                                     );
                                 }
                             }

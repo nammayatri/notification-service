@@ -2,6 +2,7 @@ use std::{env, error::Error};
 
 use grpc_rust::server_side_streaming::{server_stream_client::ServerStreamClient, User};
 use tonic::{transport::Channel, Request};
+use tracing::{error, info};
 
 async fn receive_message(
     client: &mut ServerStreamClient<Channel>,
@@ -15,7 +16,7 @@ async fn receive_message(
         .into_inner();
 
     while let Some(message) = stream.message().await? {
-        println!("[MESSAGE] = {message:?}");
+        info!(?message);
     }
 
     Ok(())
@@ -23,6 +24,8 @@ async fn receive_message(
 
 #[tokio::main]
 async fn main() {
+    let _guard = grpc_rust::setup_tracing(std::env!("CARGO_BIN_NAME"));
+
     let args: Vec<String> = env::args().collect();
     let name = args[1].clone();
     let id = sha256::digest(name.as_str());
@@ -32,12 +35,12 @@ async fn main() {
 
         match client_res {
             Ok(mut client) => {
-                if let Err(e) = receive_message(&mut client, &name, &id).await {
-                    eprintln!("[Error] {e:?}");
+                if let Err(error) = receive_message(&mut client, &name, &id).await {
+                    error!(%error);
                 }
             }
-            Err(e) => {
-                eprintln!("[Error] {e}");
+            Err(error) => {
+                error!(%error);
             }
         }
     }
