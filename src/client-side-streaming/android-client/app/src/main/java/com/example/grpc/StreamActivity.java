@@ -1,5 +1,7 @@
 package com.example.grpc;
 
+import static io.grpc.Metadata.ASCII_STRING_MARSHALLER;
+
 import androidx.appcompat.app.AppCompatActivity;
 
 import android.os.AsyncTask;
@@ -9,11 +11,19 @@ import android.util.Log;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.ref.WeakReference;
+import java.util.Date;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.ClientInterceptor;
+import io.grpc.ForwardingClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
 import io.grpc.stub.StreamObserver;
 
 public class StreamActivity extends AppCompatActivity {
@@ -39,13 +49,32 @@ public class StreamActivity extends AppCompatActivity {
             this.activityReference = new WeakReference<StreamActivity>(activity);
         }
 
+        static class ClientStreamInterceptor implements ClientInterceptor {
+            @Override
+            public <ReqT, RespT> ClientCall<ReqT, RespT>
+            interceptCall(
+                    MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next
+            ) {
+                return new
+                        ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(next.newCall(method, callOptions)) {
+                            @Override
+                            public void start(ClientCall.Listener<RespT> responseListener, Metadata headers) {
+                                headers.put(Metadata.Key.of("token", ASCII_STRING_MARSHALLER), "null");
+                                headers.put(Metadata.Key.of("x-bundle-version", ASCII_STRING_MARSHALLER), "null");
+                                headers.put(Metadata.Key.of("x-client-version", ASCII_STRING_MARSHALLER), "null");
+                                super.start(responseListener, headers);
+                            }
+                        };
+            }
+        }
+
         String tryWithExponentialBackoff(int n, String logs) throws InterruptedException {
             int maxTimeMilliSecs = 64000, maxRetries = Integer.MAX_VALUE;
             if(n == maxRetries) {
                 return logs;
             }
             try {
-                ManagedChannel channel = ManagedChannelBuilder.forAddress("10.0.2.2", 50051).usePlaintext()
+                ManagedChannel channel = ManagedChannelBuilder.forAddress("10.0.2.2", 50051).usePlaintext().intercept(new ClientStreamInterceptor())
 //                .keepAliveTime(5, TimeUnit.SECONDS)
 //                .keepAliveTimeout(20, TimeUnit.SECONDS)
                         .build();
@@ -110,6 +139,7 @@ public class StreamActivity extends AppCompatActivity {
                         @Override
                         public void onCompleted() {
                             Log.i("GRPC", "ResponseOnCompleted");
+                            channel.shutdown();
                             finishLatch.countDown();
                         }
                     };
@@ -121,11 +151,12 @@ public class StreamActivity extends AppCompatActivity {
                 // RPC completed or errored before we finished sending.
                 // Sending further requests won't error, but they will just be thrown away.
                 while(finishLatch.getCount() != 0) {
-                    Message message = Message.newBuilder().setId("1").setClientId("111").setLocation(Location.newBuilder().setLat("1").setLong("2").build()).build();
+                    Message message = Message.newBuilder().setAccuracy(1).setTimestamp((new Date()).toString()).setLocation(Location.newBuilder().setLat(1.0).setLong(2.0).build()).build();
+                    Log.i("Message", message.toString());
                     requestObserver.onNext(message);
 
                     // Sleep for a bit before sending the next one.
-                    Thread.sleep(10000);
+                    Thread.sleep(3000);
                 }
             } catch (RuntimeException e) {
                 // Cancel RPC

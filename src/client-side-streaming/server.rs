@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use config::{Config, File, FileFormat};
 use futures::{
     future::{self, Either},
     TryFutureExt, TryStreamExt,
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tonic::{transport::Server as TonicServer, Request, Response, Status};
 use tower::Service;
 use tracing::{error, info};
+use uuid::Uuid;
 use warp::{Filter, Rejection, Reply};
 
 #[allow(clippy::expect_used)]
@@ -37,7 +39,7 @@ pub static CLIENT_MESSAGE_STATUS_COLLECTOR: once_cell::sync::Lazy<HistogramVec> 
     once_cell::sync::Lazy::new(|| {
         HistogramVec::new(
             HistogramOpts::new("client_message_status", "Client Messages Status"),
-            &["clientid", "messageid", "status"],
+            &["requestid", "status"],
         )
         .expect("client message collector metric couldn't be created")
     });
@@ -61,28 +63,34 @@ fn register_custom_metrics() {
 }
 
 #[derive(Debug)]
-struct ClientStreamService {}
+struct ClientStreamService {
+    config: AppConfig,
+}
 
 impl ClientStreamService {
-    fn new() -> Self {
-        Self {}
+    fn new(config: AppConfig) -> Self {
+        Self { config }
     }
 }
 
 #[derive(Default, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct Location {
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Default, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct APIRequest {
-    name: String,
-    job: String,
+    pt: Location,
+    ts: String,
 }
 
 #[derive(Default, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct APIResponse {
-    name: String,
-    job: String,
-    id: String,
-    created_at: String,
+    _result: String,
 }
 
 #[tonic::async_trait]
@@ -95,40 +103,59 @@ impl ClientStream for ClientStreamService {
         CONNECTED_CLIENTS.inc();
         info!("[CONNECTED]");
 
+        let request_id = Uuid::new_v4();
+        let metadata = request.metadata().clone();
+        let token = metadata.get("token").unwrap().to_str().unwrap();
+        let client_version = metadata.get("x-client-version").unwrap().to_str().unwrap();
+        let bundle_version = metadata.get("x-bundle-version").unwrap().to_str().unwrap();
+
         let mut stream = request.into_inner();
 
         while let Ok(Some(message)) = stream.try_next().await {
-            let body = APIRequest {
-                name: message.clone().client_id,
-                job: message.clone().id,
-            };
+            let body = vec![APIRequest {
+                pt: Location {
+                    lat: message.clone().location.map_or(0.0, |loc| loc.lat),
+                    lon: message.clone().location.map_or(0.0, |loc| loc.long),
+                },
+                ts: message.clone().timestamp,
+            }];
+
+            info!(tag = "[API REQUEST BODY]", ?body);
 
             let client = reqwest::Client::new();
             let response = client
-                .post("https://reqres.in/api/users")
+                .post(format!("{}/driver/location", self.config.api.base_url))
                 .header(CONTENT_TYPE, "application/json")
+                .header("x-request-id", request_id.to_string())
+                .header("x-grpc-id", request_id.to_string())
+                .header("x-client-version", client_version.to_string())
+                .header("x-bundle-version", bundle_version.to_string())
+                .header("token", token.to_string())
                 .json(&body)
                 .send()
                 .await
                 .unwrap();
 
-            CLIENT_MESSAGE_STATUS_COLLECTOR.with_label_values(&[
-                message.clone().client_id.as_str(),
-                message.id.as_str(),
-                response.status().as_str(),
-            ]);
+            info!(tag = "[API RESPONSE]", ?response);
+
+            CLIENT_MESSAGE_STATUS_COLLECTOR
+                .with_label_values(&[request_id.to_string().as_str(), response.status().as_str()]);
 
             match response.status() {
-                reqwest::StatusCode::CREATED => {
+                reqwest::StatusCode::OK => {
                     match response.json::<APIResponse>().await {
-                        Ok(response) => info!(?response, "Success!"),
+                        Ok(response) => {
+                            info!(tag = "[API RESPONSE DECODE - SUCCESS]", ?response);
+                        }
                         Err(error) => {
-                            error!(%error, "Hm, the response didn't match the shape we expected.")
+                            error!(tag = "[API RESPONSE DECODE - ERROR]", %error);
+                            return Err(Status::unavailable(error.to_string()));
                         }
                     };
                 }
                 status => {
-                    error!(%status, "Received unexpected status code");
+                    error!(tag = "[API RESPONSE STATUS CODE - ERROR]", %status);
+                    return Err(Status::unavailable(status.to_string()));
                 }
             };
         }
@@ -174,14 +201,54 @@ async fn metrics_handler() -> Result<impl Reply, Rejection> {
     Ok(res)
 }
 
+fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
+    match req.metadata().get("token") {
+        Some(_t) if true => Ok(req),
+        _ => Err(Status::unauthenticated("No valid auth token")),
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+struct ServerConfig {
+    host_ip: String,
+    port: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+struct ApiConfig {
+    base_url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+struct AppConfig {
+    server: ServerConfig,
+    api: ApiConfig,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::builder()
+        .add_source(File::new(
+            "config/client-side-streaming/Config.toml",
+            FileFormat::Toml,
+        ))
+        .build()
+        .expect("failed in constructing application config");
+
+    let config: AppConfig =
+        serde_path_to_error::deserialize(config).expect("failed in decoding application config");
+
     let _guard = grpc_rust::setup_tracing(std::env!("CARGO_BIN_NAME"));
 
     register_custom_metrics();
 
-    let addr = "127.0.0.1:50051".parse().unwrap();
-    info!("Server listening on: {addr}");
+    let addr = format!("{}:{}", config.server.host_ip, config.server.port)
+        .parse()
+        .expect("socket address couldn't be parsed");
+    info!(tag = "[SERVER LISTENING]", "{addr}");
 
     let mut warp = warp::service(warp::path("metrics").and_then(metrics_handler));
 
@@ -189,10 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .http2_keep_alive_interval(Some(Duration::from_secs(5)))
         .http2_keep_alive_timeout(Duration::from_secs(20))
         .serve(make_service_fn(move |_| {
-            let mut tonic = TonicServer::builder()
-                .add_service(ClientStreamServer::new(ClientStreamService::new()))
-                .into_service();
-
+            let config = config.clone();
             future::ok::<_, Infallible>(tower::service_fn(
                 move |req: hyper::Request<hyper::Body>| match req.uri().path() {
                     "/metrics" => Either::Left(
@@ -200,12 +264,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .map_ok(|res| res.map(EitherBody::Left))
                             .map_err(Error::from),
                     ),
-                    _ => Either::Right(
-                        tonic
-                            .call(req)
-                            .map_ok(|res| res.map(EitherBody::Right))
-                            .map_err(Error::from),
-                    ),
+                    _ => {
+                        let svc = ClientStreamServer::with_interceptor(
+                            ClientStreamService::new(config.clone()),
+                            check_auth,
+                        );
+                        let mut tonic = TonicServer::builder().add_service(svc).into_service();
+
+                        Either::Right(
+                            tonic
+                                .call(req)
+                                .map_ok(|res| res.map(EitherBody::Right))
+                                .map_err(Error::from),
+                        )
+                    }
                 },
             ))
         }))

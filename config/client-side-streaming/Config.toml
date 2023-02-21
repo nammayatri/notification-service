@@ -1,0 +1,6 @@
+[server]
+host_ip = "127.0.0.1"
+port = "50051"
+
+[api]
+base_url = "https://api.sandbox.beckn.juspay.in/dev/dobpp/ui"
