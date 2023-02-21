@@ -6,7 +6,11 @@ option java_package = "com.example.grpc";
 package client_side_streaming;
 
 service ClientStream {
-  rpc SendMessage (stream Message) returns (Empty);
+  rpc SendMessage (stream Messages) returns (Empty);
+}
+
+message Messages {
+  repeated Message messages = 1;
 }
 
 message Message {

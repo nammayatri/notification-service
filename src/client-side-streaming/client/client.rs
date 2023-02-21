@@ -1,19 +1,14 @@
-use std::{env, time::Duration};
+use std::time::Duration;
 
 use chrono::Utc;
 use grpc_rust::client_side_streaming::{
-    client_stream_client::ClientStreamClient, Location, Message,
+    client_stream_client::ClientStreamClient, Location, Message, Messages,
 };
-use sha256::digest;
 use tokio::time;
 use tonic::{metadata::MetadataValue, transport::Channel, Request};
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-    let name = args[1].clone();
-    let _id = digest(name.as_str());
-
     let channel = Channel::from_static("https://127.0.0.1:50051")
         .connect()
         .await
@@ -23,6 +18,8 @@ async fn main() {
 
     let mut client = ClientStreamClient::with_interceptor(channel, move |mut req: Request<()>| {
         req.metadata_mut().insert("token", token.clone());
+        req.metadata_mut().insert("x-bundle-version", token.clone());
+        req.metadata_mut().insert("x-client-version", token.clone());
         Ok(req)
     });
 
@@ -39,7 +36,11 @@ async fn main() {
                 })
             };
 
-            yield message
+            let messages = Messages {
+                messages : vec!(message)
+            };
+
+            yield messages
         }
     };
 

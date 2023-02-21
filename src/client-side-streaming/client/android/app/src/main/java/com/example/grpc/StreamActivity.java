@@ -152,8 +152,8 @@ public class StreamActivity extends AppCompatActivity {
                 // Sending further requests won't error, but they will just be thrown away.
                 while(finishLatch.getCount() != 0) {
                     Message message = Message.newBuilder().setAccuracy(1).setTimestamp((new Date()).toString()).setLocation(Location.newBuilder().setLat(1.0).setLong(2.0).build()).build();
-                    Log.i("Message", message.toString());
-                    requestObserver.onNext(message);
+                    Messages messages = Messages.newBuilder().addMessages(message).build();
+                    requestObserver.onNext(messages);
 
                     // Sleep for a bit before sending the next one.
                     Thread.sleep(3000);

@@ -12,7 +12,7 @@ use futures::{
 };
 use grpc_rust::client_side_streaming::{
     client_stream_server::{ClientStream, ClientStreamServer},
-    Empty, Message,
+    Empty, Message, Messages,
 };
 use hyper::{header::CONTENT_TYPE, http, service::make_service_fn, Server};
 use prometheus::{HistogramOpts, HistogramVec, IntCounter, IntGauge, Registry};
@@ -97,7 +97,7 @@ struct APIResponse {
 impl ClientStream for ClientStreamService {
     async fn send_message(
         &self,
-        request: Request<tonic::Streaming<Message>>,
+        request: Request<tonic::Streaming<Messages>>,
     ) -> Result<Response<Empty>, Status> {
         INCOMING_REQUESTS.inc();
         CONNECTED_CLIENTS.inc();
@@ -111,14 +111,18 @@ impl ClientStream for ClientStreamService {
 
         let mut stream = request.into_inner();
 
-        while let Ok(Some(message)) = stream.try_next().await {
-            let body = vec![APIRequest {
-                pt: Location {
-                    lat: message.clone().location.map_or(0.0, |loc| loc.lat),
-                    lon: message.clone().location.map_or(0.0, |loc| loc.long),
-                },
-                ts: message.clone().timestamp,
-            }];
+        while let Ok(Some(messages)) = stream.try_next().await {
+            let body: Vec<APIRequest> = messages
+                .messages
+                .into_iter()
+                .map(|message| APIRequest {
+                    pt: Location {
+                        lat: message.clone().location.map_or(0.0, |loc| loc.lat),
+                        lon: message.clone().location.map_or(0.0, |loc| loc.long),
+                    },
+                    ts: message.clone().timestamp,
+                })
+                .collect();
 
             info!(tag = "[API REQUEST BODY]", ?body);
 
