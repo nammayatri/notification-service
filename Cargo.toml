@@ -22,7 +22,7 @@ path = "src/client-side-streaming/server.rs"
 
 [[bin]]
 name = "css_client"
-path = "src/client-side-streaming/client.rs"
+path = "src/client-side-streaming/client/client.rs"
 
 [dependencies]
 async-stream = "0.2"
