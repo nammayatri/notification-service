@@ -73,6 +73,7 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 
 1. install prometheus and run `prometheus` in root directory, it will start prometheus server on **localhost:9090**.
 2. run `cargo run --bin css-server`, it starts server on **localhost:5051**.
+3. to run by overriding configs from terminal, `CONFIG_SERVER__PORT="50751" cargo run --bin css_server` this will override **server.port** from **config/Config.toml**.
 
 ### Android Client
 

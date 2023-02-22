@@ -2,7 +2,7 @@ mod services;
 mod types;
 mod utils;
 
-use config::{Config, File, FileFormat};
+use config::{Config, Environment, File, FileFormat};
 use grpc_rust::client_side_streaming::client_stream_server::ClientStreamServer;
 use services::client_stream::{check_auth, ClientStreamService};
 use std::time::Duration;
@@ -18,6 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "config/client-side-streaming/Config.toml",
             FileFormat::Toml,
         ))
+        .add_source(Environment::with_prefix("CONFIG").prefix_separator("_").separator("__").keep_prefix(false))
         .build()
         .expect("failed in constructing application config");
 
