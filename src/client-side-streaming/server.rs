@@ -1,3 +1,4 @@
+mod handlers;
 mod services;
 mod types;
 mod utils;
@@ -40,7 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(tag = "[SERVER LISTENING]", "{addr}");
 
     let web_service = axum::Router::new()
-        .route("/metrics", axum::routing::get(prometheus::metrics_handler))
+        .route("/metrics", axum::routing::get(handlers::metrics_handler))
+        .route("/health", axum::routing::get(handlers::health_handler))
         .into_make_service();
 
     let svc =

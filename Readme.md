@@ -85,3 +85,8 @@ https://user-images.githubusercontent.com/38260510/219955643-10f7221f-4741-411a-
 ### [OPTIONAL] Android Client
 
 1. run `cargo run --bin css-client <name>`, client connects to server and starts streaming messages to the server every 10 seconds.
+
+## Raising PR Guidelines
+1. install nightly toolchain for rustc, `rustup install nightly`.
+2. install cargo udeps for removing unused dependencies, `brew install cargo-udeps`.
+3. format code with, `rustup run nightly cargo fmt --all`.

@@ -1,0 +1,38 @@
+version: '3'
+
+networks:
+  router_net:
+  
+services:
+  client_stream_server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY: css_server
+    ports:
+      - "50051:50051"
+    networks:
+      - router_net
+    environment:
+      - CONFIG_SERVER__HOST_IP=0.0.0.0
+      - CONFIG_SERVER__PORT=50051
+      - CONFIG_API__ENABLED=false
+    command: ./target/release/css_server
+    healthcheck:
+      test: curl --fail http://localhost:50051/health || exit 1
+      interval: 100s
+      retries: 3
+      start_period: 20s
+      timeout: 10s
+  prometheus:
+    image: prom/prometheus:latest
+    networks:
+      - router_net
+    profiles:
+      - monitoring
+    volumes:
+      - ./config/client-side-streaming/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090"
+    restart: unless-stopped
