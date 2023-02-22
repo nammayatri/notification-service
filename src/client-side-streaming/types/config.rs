@@ -1,7 +1,6 @@
-use serde::{Deserialize};
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone, Default)]
-
 #[serde(default)]
 pub struct ServerConfig {
     pub host_ip: String,

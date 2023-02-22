@@ -42,13 +42,13 @@ pub fn setup_tracing(binary_name: &'static str) -> TracingGuard {
     tracing_subscriber::
         // fmt().json()
         registry()
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(Level::TRACE.into())
-                .from_env_lossy(),
-        )
-        .with(logging_layer.with_filter(crate_filter))
-        .init();
+    .with(
+        EnvFilter::builder()
+            .with_default_directive(Level::TRACE.into())
+            .from_env_lossy(),
+    )
+    .with(logging_layer.with_filter(crate_filter))
+    .init();
 
     TracingGuard { _log_guard: guard }
 }

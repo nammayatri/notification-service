@@ -1,9 +1,6 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::task::Poll;
+use std::{future::Future, pin::Pin, task::Poll};
 
-use hyper::HeaderMap;
-use hyper::{body::HttpBody, Body, Request, Response};
+use hyper::{body::HttpBody, Body, HeaderMap, Request, Response};
 use pin_project::pin_project;
 use tower::Service;
 

@@ -2,14 +2,14 @@ mod services;
 mod types;
 mod utils;
 
+use std::time::Duration;
+
 use config::{Config, Environment, File, FileFormat};
 use grpc_rust::client_side_streaming::client_stream_server::ClientStreamServer;
 use services::client_stream::{check_auth, ClientStreamService};
-use std::time::Duration;
 use tonic::transport::Server;
 use tracing::info;
-use utils::hybrid;
-use utils::prometheus;
+use utils::{hybrid, prometheus};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,7 +18,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "config/client-side-streaming/Config.toml",
             FileFormat::Toml,
         ))
-        .add_source(Environment::with_prefix("CONFIG").prefix_separator("_").separator("__").keep_prefix(false))
+        .add_source(
+            Environment::with_prefix("CONFIG")
+                .prefix_separator("_")
+                .separator("__")
+                .keep_prefix(false),
+        )
         .build()
         .expect("failed in constructing application config");
 

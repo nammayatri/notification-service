@@ -1,2 +1,2 @@
-pub mod prometheus;
 pub mod hybrid;
+pub mod prometheus;
