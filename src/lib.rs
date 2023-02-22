@@ -39,7 +39,9 @@ pub fn setup_tracing(binary_name: &'static str) -> TracingGuard {
         .with_target(std::env!("CARGO_PKG_NAME"), Level::TRACE)
         .with_target(binary_name, Level::TRACE);
 
-    tracing_subscriber::registry()
+    tracing_subscriber::
+        // fmt().json()
+        registry()
         .with(
             EnvFilter::builder()
                 .with_default_directive(Level::TRACE.into())
