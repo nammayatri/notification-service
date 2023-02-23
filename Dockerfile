@@ -1,11 +1,9 @@
-FROM rust:1.65
+FROM rust:1.65 as builder
 
 RUN apt-get update \
     && apt install -y protobuf-compiler
 
-WORKDIR /notification_service
-
-ARG BINARY
+WORKDIR /app
 
 # Disable incremental compilation.
 #
@@ -29,3 +27,19 @@ ENV RUST_BACKTRACE="short"
 
 COPY . .
 RUN cargo build --release
+
+FROM debian
+
+RUN apt-get update \
+    && apt-get install -y ca-certificates tzdata
+
+COPY --from=builder /app/target/release/css_server /usr/local/bin/css_server
+COPY --from=builder /app/config /usr/local/bin/config
+
+EXPOSE 50051
+
+WORKDIR /usr/local/bin
+
+RUN chmod +x ./css_server
+
+CMD ["./css_server"]

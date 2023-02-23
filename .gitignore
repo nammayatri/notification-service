@@ -1,2 +1,4 @@
 /target
 /data
+/config/client-side-streaming/data
+/*.tar

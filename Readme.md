@@ -86,7 +86,12 @@ https://user-images.githubusercontent.com/38260510/219955643-10f7221f-4741-411a-
 
 1. run `cargo run --bin css-client <name>`, client connects to server and starts streaming messages to the server every 10 seconds.
 
+## Run In Docker
+
+1. to run along with prometheus, `docker compose up`.
+2. build the docker image and run the image `docker build -t client_stream_service . && docker run -p 50051:50051 -d client_stream_service`.
+3. to generate a shareable tar file of docker image, `docker save -o ./css_server.tar client_stream_service`.
+
 ## Raising PR Guidelines
 1. install nightly toolchain for rustc, `rustup install nightly`.
-2. install cargo udeps for removing unused dependencies, `brew install cargo-udeps`.
-3. format code with, `rustup run nightly cargo fmt --all`.
+2. format code with, `rustup run nightly cargo fmt --all`.
