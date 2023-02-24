@@ -10,6 +10,7 @@ use grpc_rust::client_side_streaming::client_stream_server::ClientStreamServer;
 use services::client_stream::{check_auth, ClientStreamService};
 use tonic::transport::Server;
 use tracing::info;
+use types::config::AppConfig;
 use utils::{hybrid, prometheus};
 
 #[tokio::main]
@@ -25,11 +26,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .separator("__")
                 .keep_prefix(false),
         )
-        .build()
-        .expect("failed in constructing application config");
+        .build();
 
-    let config: types::config::AppConfig =
-        serde_path_to_error::deserialize(config).expect("failed in decoding application config");
+    let config: types::config::AppConfig = match config {
+        Ok(config) => {
+            serde_path_to_error::deserialize(config).map_or(AppConfig::default(), |config| config)
+        }
+        Err(_) => AppConfig::default(),
+    };
 
     let _guard = grpc_rust::setup_tracing(std::env!("CARGO_BIN_NAME"));
 

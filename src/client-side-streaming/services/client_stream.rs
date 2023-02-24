@@ -102,13 +102,11 @@ impl ClientStream for ClientStreamService {
                                 }
                                 Err(error) => {
                                     error!(tag = "[API RESPONSE DECODE - ERROR]", %error);
-                                    return Err(Status::unavailable(error.to_string()));
                                 }
                             };
                         }
                         status => {
                             error!(tag = "[API RESPONSE STATUS CODE - ERROR]", %status);
-                            return Err(Status::unavailable(status.to_string()));
                         }
                     };
                 }

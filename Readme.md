@@ -88,7 +88,7 @@ https://user-images.githubusercontent.com/38260510/219955643-10f7221f-4741-411a-
 
 ## Run In Docker
 
-1. to run along with prometheus, `docker compose up`.
+1. to run along with prometheus, `docker compose up client_stream_service prometheus`.
 2. build the docker image and run the image `docker build -t client_stream_service . && docker run -p 50051:50051 -d client_stream_service`.
 3. to generate a shareable tar file of docker image, `docker save -o ./css_server.tar client_stream_service`.
 
