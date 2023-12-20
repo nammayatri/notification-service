@@ -6,9 +6,5 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-tonic::include_proto!("notification_service");
-
-pub mod common;
-pub mod environment;
-pub mod redis;
-pub mod utils;
+pub mod logger;
+pub mod prometheus;
