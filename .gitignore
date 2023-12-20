@@ -2,3 +2,4 @@
 /data
 /config/client-side-streaming/data
 /*.tar
+/.DS_Store

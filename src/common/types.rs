@@ -5,10 +5,7 @@
     or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details. You should have received a copy of
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
+use serde::{Deserialize, Serialize};
 
-tonic::include_proto!("notification_service");
-
-pub mod common;
-pub mod environment;
-pub mod redis;
-pub mod utils;
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+pub struct Token(pub String);

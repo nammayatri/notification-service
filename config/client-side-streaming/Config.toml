@@ -1,7 +1,0 @@
-[server]
-host_ip = "0.0.0.0"
-port = "50051"
-
-[api]
-enabled = true
-base_url = "https://api.sandbox.beckn.juspay.in/dev/dobpp/ui"
