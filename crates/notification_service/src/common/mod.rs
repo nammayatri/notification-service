@@ -6,5 +6,5 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-pub mod logger;
-pub mod prometheus;
+pub mod types;
+pub mod utils;

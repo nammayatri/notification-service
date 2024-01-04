@@ -1,8 +1,5 @@
 syntax = "proto3";
 
-option java_multiple_files = true;
-option java_package = "com.example.grpc";
-
 package notification_service;
 
 // Message for acknowledging notifications
@@ -14,7 +11,7 @@ message NotificationAck {
 message Entity {
   string id = 1;
   string type = 2;
-  string entity_data = 3;  // JSON data as string
+  string data = 3;  // JSON data as string
 }
 
 // Structure of a notification payload
@@ -23,8 +20,9 @@ message NotificationPayload {
   string category = 2;
   string title = 3;
   string body = 4;
-  bool show = 5;  // Use bool instead of boolean
-  Entity entity = 6;
+  string show = 5;
+  string ttl = 6; // UTC Datetime String
+  Entity entity = 7;
 }
 
 // Notification service with a single Bi-directional RPC method

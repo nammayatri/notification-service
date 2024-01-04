@@ -1,6 +1,6 @@
 let redis_cfg = {
     redis_host = "0.0.0.0",
-    redis_port = 6380,
+    redis_port = 6379,
     redis_pool_size = 10,
     redis_partition = 0,
     reconnect_max_attempts = 10,
@@ -17,8 +17,17 @@ let logger_cfg = {
     log_to_file = False
 }
 
+let kafka_cfg = {
+    kafka_key = "bootstrap.servers",
+    kafka_host = "0.0.0.0:29092"
+}
+
 in {
+    port = 50051,
+    prometheus_port = 9090,
     logger_cfg = logger_cfg,
     redis_cfg = redis_cfg,
-    port = 50051
+    kafka_cfg = kafka_cfg,
+    reader_delay_seconds = 1,
+    retry_delay_seconds = 60,
 }

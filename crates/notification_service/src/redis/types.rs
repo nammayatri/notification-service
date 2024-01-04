@@ -5,9 +5,3 @@
     or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details. You should have received a copy of
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-
-fn main() {
-    #[allow(clippy::expect_used)]
-    tonic_build::compile_protos("protos/notification_service.proto")
-        .expect("Failed to compile `notification_service.proto` file");
-}

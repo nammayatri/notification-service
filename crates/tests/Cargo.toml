@@ -1,0 +1,15 @@
+[package]
+name = "tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = "1.28.2"
+futures = "0.3"
+anyhow = "1.0.75"
+serde_dhall = "0.12.1"
+tokio-stream = "0.1"
+tonic = "0.10.2"
+
+shared = { git = "https://github.com/nammayatri/shared-kernel-rs", branch = "main" }
+notification_service = { version = "0.1.0", path = "../notification_service" }

@@ -6,9 +6,10 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-tonic::include_proto!("notification_service");
-
-pub mod common;
-pub mod environment;
-pub mod redis;
-pub mod utils;
+fn main() {
+    #[allow(clippy::expect_used)]
+    tonic_build::configure()
+        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .compile(&["protos/notification_service.proto"], &["protos"])
+        .expect("Failed to compile `notification_service.proto` file");
+}
