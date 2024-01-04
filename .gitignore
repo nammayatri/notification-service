@@ -4,3 +4,8 @@
 /*.tar
 /.DS_Store
 pico.save
+
+# Nix
+/.direnv
+/result
+/.pre-commit-config.yaml
