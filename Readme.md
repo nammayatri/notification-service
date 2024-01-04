@@ -16,82 +16,106 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 1. Connection Backoff – When we do a connection to a backend which fails, it is typically desirable to not retry immediately (to avoid flooding the network or the server with requests) and instead do some form of exponential backoff.
 2. Keepalive – The keepalive ping is a way to check if a channel is currently working by sending HTTP2 pings over the transport. It is sent periodically, and if the ping is not acknowledged by the peer within a certain timeout period, the transport is disconnected.
 
+## GRPC Bi-Directional Streaming Architecture
+
+**Components**
+- Client: Frontend SDK listening for notifications.
+- Notification Server: GRPC Server broadcasting the notifications to the client in Protobuf format over a Persistent QUIC connection.
+- Redis Streams: Redis Pub-Sub layer for message queue.
+- BAP/BPP: Application that sends notifications at various stages.
+- FCM: Google’s firebase messaging service that sends push notifications to both Android & IOS.
+
+<img width="889" alt="Screenshot 2024-01-04 at 10 56 36 AM" src="https://github.com/nammayatri/notification-service/assets/38260510/4ab233a4-6b52-4dab-b511-a11559438a61">
+
+**Stage (i)** - Client connection to Notification Server
+1. Client connects to the Notification Server through a persistent Bi-directional QUIC connection.
+
+**Stage (ii)** - Application wants to send the Notification to a particular client
+2. BAP/BPP sends the notification JSON payload to an external FCM service and also publishes it to Redis Stream for the clientId.
+
+**Stage (iii)** - Push Notification to the connected client
+3. Push the notification read from the Redis Stream to the connected Client by persistent GRPC bi-directional streaming connection in Protobuf format.
+
+**Stage (iv)** - Notification received on client end
+4. De-Duplicate the notification received by the same “Notification ID” from both FCM and GRPC server.
+5. Send an Acknowledgement to the Notification Server for the received notification over the persistent GRPC stream connection.
+
+**Stage (v)** - Acknowledge the received notification
+6. Delete the acknowledged notification from Redis Stream to avoid retries for it.
+
 ## Advantages
 
-1. Since we would have full control of the messages, we can also retry the undelivered messages again before they expire.
-2. We can introduce the right tooling and metrics to help us understand the message success rate and improve further.
-3. On testing, we found that if the client's wifi is turned off then the messages get sent once the client comes back on in some time, so it handles the cases where bandwidth fluctuates and gives us some reliability.
-4. We can also set a keep alive ping that can ask for acknowledgement from clients to be sure the client is not away for too long. If so then, we can forcefully terminate the connection.
+1. Since this will offer us more control over the notification sent to the client, we can also retry the undelivered messages again before they expire.
+2. We can track the status of each notification in clickhouse for analytics and also add push metrics to prometheus.
+3. On testing, we found that if the client's wifi is turned off then the messages get sent once the client comes back on in some time, so it handles the cases where bandwidth fluctuates and offers some amount of reliability to Network failures.
+4. We can also set a keep alive ping that can ask for acknowledgement from clients to be sure the client is not away for too long. If so then, we can forcefully terminate the connection and ask the client to reconnect.
 
-## GRPC Server Side Streaming Architecture
+## Setting up development environment
 
-![GRPC Streaming](https://user-images.githubusercontent.com/38260510/219075736-baca827e-6516-4d72-9013-f466fbcd7a13.png)
+### Nix
 
-1. Backend service can keep pushing new messages for the client to the Redis Streams.
-2. Notification servers can keep reading new messages from the streams and discover the GRPC server to which the client is connected to through service discovery and then send the message to the GRPC server.
-3. GRPC server then has to stream the message to the client and return the Success or Failure response to the Notification server based on which the server can acknowledge that message in the stream and move to the next message.
-4. In case if the client has lost network bandwidth, then the health check ping pong could fail and forcefully disconnect the client from the stream.
-5. The messages that were consumed by notification servers but were unable to be sent/acknowledged from the clients. Would be added as Pending messages in the consumer group which could then be retriggered at some regular intervals.
-6. On top of all we can have the right metrics that would help us in debugging the messages that were sent and not sent to the client.
+1. [Install **Nix**](https://github.com/DeterminateSystems/nix-installer#the-determinate-nix-installer)
+    - If you already have Nix installed, you must [enable Flakes](https://nixos.wiki/wiki/Flakes#Enable_flakes) manually.
+    - Then, run the following to check that everything is green ✅.
+        ```sh
+        nix run nixpkgs#nix-health
+        ```
+1. [Optional] Setup the Nix **binary cache**:
+    ```sh
+    nix run nixpkgs#cachix use nammayatri
+    ```
+    - For this command to succeed, you must have added yourself to the `trusted-users` list of `nix.conf`
+1. Install **home-manager**[^hm] and setup **nix-direnv** and **starship** by following the instructions [in this home-manager template](https://github.com/juspay/nix-dev-home).[^direnv] [You want this](https://haskell.flake.page/direnv) to facilitate a nice Nix develoment environment.
 
-## Setup
+[^hm]: Unless you are using NixOS in which case home-manager is not strictly needed.
+[^direnv]: Not strictly required to develop the project. If you do not use `direnv` however you would have to remember to manually restart the `nix develop` shell, and know when exactly to do this each time.
 
-### GRPC Server
+### Rust
 
-1. install prometheus and run `prometheus` in root directory, it will start prometheus server on **localhost:9090**.
-2. run `cargo run --bin sss-server`, it starts server on **localhost:5051**.
+`cargo` is available in the Nix develop shell. You can also use one of the `just` commands (shown in Nix shell banner) to invoke cargo indirectly.
 
-### Client
+### VSCode
 
-1. run `cargo run --bin sss-client <name>`, client connects to server and the stream starts.
-2. Also, client add it's id to the Redis Service Discovery (clientId : serverIp).
+The necessary extensions are configured in `.vscode/`. See [nammayatri README](https://github.com/nammayatri/nammayatri/tree/main/Backend#visual-studio-code) for complete instructions.
 
-### Notification Server
+### Autoformatting
 
-1. run `cargo run --bin sss-notifier`, notifier starts listening to the new messages from redis-streams.
-2. For every new message it identifies the grpc-server to which the client is connected to through redis service discovery.
-3. It then send the message to the correct GRPC server, which then broadcasts it to the client down the stream.
+Run `just fmt` (or `treefmt`) to auto-format the project tree. The CI checks for it.
 
-### Redis Stream
+### pre-commit
 
-1. create the required redis stream and it's consumer, `XGROUP CREATE chat-stream-1 chat-group-1 $ MKSTREAM`
-2. add new message to the stream, `XADD chat-stream-1 * content helloworld to 4d5548b231641d024b901f321fe8c1265dcb38bd2d514d2ee23bc55ab124f676 ttl 36000`
+pre-commit hooks will be installed in the Nix devshell. Run the `pre-commit` command to manually run them. You can also run `pre-commit run -a` to run pre-commit hooks on *all* files (modified or not).
 
-## GRPC Client Side Streaming Architecture
+### Services
 
-1. The client connects to the GRPC server and keeps sending location updates to the server on the channel.
-2. Server then send the location updates for that client to the Backend service via HTTP call to an Rest API.
-3. Prometheus is integrated for continus metrics of the following parameters:
-    - Total No. of Incoming Client Connections.
-    - Total No. of Connected Clients.
-    - Total No. of Disconnected Clients.
-    - Status of Messages Recieved by the Clients.
+Run `just services` to run the service dependencies (example: redis-server) using [services-flake](https://github.com/juspay/services-flake).
 
-## Setup
+## Usage / Installing
 
-### GRPC Server
+Run `nix build` in the project which produces a `./result` symlink. You can also run `nix run` to run the program immediately after build.
 
-1. install prometheus and run `prometheus` in root directory, it will start prometheus server on **localhost:9090**.
-2. run `cargo run --bin css-server`, it starts server on **localhost:5051**.
-3. to run by overriding configs from terminal, `CONFIG_SERVER__PORT="50751" cargo run --bin css_server` this will override **server.port** from **config/Config.toml**.
+## Upstream Dependent Service
 
-### Android Client
+Clone and Run [dynamic-driver-offer-app](https://github.com/nammayatri/nammayatri) as it will be used for Internal Authentication and Testing postman flow.
 
-https://user-images.githubusercontent.com/38260510/219955643-10f7221f-4741-411a-9b78-75f384e4f2e1.mp4
+## Postman Collection
 
-1. open `src/client-side-streaming/android-client` in Android Studio and run the application.
-2. application will keep sending messages to client with a delay of 10 seconds.
+Import the [Postman Collection](./Location%20Tracking%20Service%20Dev.postman_collection.json) in postman to test the API flow or Run `newman run LocationTrackingService.postman_collection.json --delay-request 2000`.
 
-### [OPTIONAL] Android Client
+## Contributing PRs
 
-1. run `cargo run --bin css-client <name>`, client connects to server and starts streaming messages to the server every 10 seconds.
+Run `nix run nixpkgs#nixci` locally to make sure that the project builds. The CI runs the same.
 
-## Run In Docker
+## Profiling
 
-1. to run along with prometheus, `docker compose up client_stream_service prometheus`.
-2. build the docker image and run the image `docker build -t client_stream_service . && docker run -p 50051:50051 -d client_stream_service`.
-3. to generate a shareable tar file of docker image, `docker save -o ./css_server.tar client_stream_service`.
+In cargo.toml add :
 
-## Raising PR Guidelines
-1. install nightly toolchain for rustc, `rustup install nightly`.
-2. format code with, `rustup run nightly cargo fmt --all`.
+```
+[profile.dev]
+debug = true
+debug-assertions = false
+
+[profile.release]
+debug = true
+debug-assertions = false
+```
