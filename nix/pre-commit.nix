@@ -14,6 +14,15 @@
         hooks = {
           treefmt.enable = true;
 
+          gitleaks = {
+            enable = true;
+            name = "gitleaks";
+            description = "Run gitleaks to detect sensitive information in Git repositories";
+            files = ".*";
+            entry = "${pkgs.gitleaks}/bin/gitleaks";
+            pass_filenames = false;
+          };
+
           # Custom hooks
           clippy-nix = {
             enable = true;
