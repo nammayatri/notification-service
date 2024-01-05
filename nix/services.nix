@@ -7,10 +7,11 @@
         imports = [
           inputs.services-flake.processComposeModules.default
         ];
-        services.redis."redis1" = {
+        services.redis-cluster."redis" = {
           enable = true;
-          port = 6380;
         };
+        services.zookeeper."zookeeper".enable = true;
+        services.apache-kafka."kafka".enable = true;
       };
 
       # Flake outputs

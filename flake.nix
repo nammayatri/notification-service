@@ -59,9 +59,6 @@
               self'.devShells.services
             ];
             shellHook = ''
-              export REDIS_HOST=${config.process-compose."notification-services".services.redis."redis1".bind}
-              export POD_IP_ADDRESS=postgresql://postgres:root@localhost:5434/atlas_dev
-
               echo
               echo "🍎🍎 Run 'just <recipe>' to get started"
               just

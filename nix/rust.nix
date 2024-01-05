@@ -24,6 +24,7 @@
         nativeBuildInputs = [
           pkgs.pkg-config
           pkgs.cmake
+          pkgs.protobuf
         ];
       };
       cargoArtifacts = craneLib.buildDepsOnly args;
