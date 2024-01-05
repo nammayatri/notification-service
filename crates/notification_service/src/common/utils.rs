@@ -6,6 +6,8 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+use std::cmp::Ordering;
+
 use crate::NotificationPayload;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
@@ -56,13 +58,25 @@ pub fn decode_notification_payload(
     Ok(result)
 }
 
-pub fn get_redis_stream_id_with_seconds_offset_from_current_time(
-    time: DateTime<Utc>,
-    seconds_offset: i64,
-) -> String {
-    let offset_time = time + Duration::seconds(seconds_offset);
-    let unix_timestamp = offset_time.timestamp();
-    format!("{}-0", unix_timestamp)
+pub fn is_stream_id_less(id1: &str, id2: &str) -> bool {
+    // Split the stream IDs into timestamp and sequence parts
+    let parts1: Vec<&str> = id1.split('-').collect();
+    let parts2: Vec<&str> = id2.split('-').collect();
+
+    // Parse timestamp and sequence as integers
+    match (
+        parts1.first().and_then(|&s| s.parse::<u64>().ok()),
+        parts1.get(1).and_then(|&s| s.parse::<u64>().ok()),
+        parts2.first().and_then(|&s| s.parse::<u64>().ok()),
+        parts2.get(1).and_then(|&s| s.parse::<u64>().ok()),
+    ) {
+        (Some(ts1), Some(seq1), Some(ts2), Some(seq2)) => match ts1.cmp(&ts2) {
+            Ordering::Less => true,
+            Ordering::Equal => seq1 < seq2,
+            Ordering::Greater => false,
+        },
+        _ => false, // Parsing failed, consider them not less
+    }
 }
 
 pub fn diff_utc(old: DateTime<Utc>, new: DateTime<Utc>) -> Duration {

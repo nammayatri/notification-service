@@ -39,6 +39,15 @@ pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
             .expect("Failed to register retried notifications metrics")
     });
 
+pub static CALL_EXTERNAL_API: once_cell::sync::Lazy<HistogramVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_histogram_vec!(
+            opts!("external_request_duration", "Call external API requests").into(),
+            &["method", "host", "service", "status"]
+        )
+        .expect("Failed to register call external API metrics")
+    });
+
 #[macro_export]
 macro_rules! notification_latency {
     ($start:expr) => {
@@ -48,6 +57,16 @@ macro_rules! notification_latency {
         NOTIFICATION_LATENCY
             .with_label_values(&[version.as_str()])
             .observe(duration.num_seconds() as f64);
+    };
+}
+
+#[macro_export]
+macro_rules! call_external_api {
+    ($method:expr, $host:expr, $path:expr, $status:expr, $start:expr) => {
+        let duration = $start.elapsed().as_secs_f64();
+        CALL_EXTERNAL_API
+            .with_label_values(&[$method, $host, $path, $status])
+            .observe(duration);
     };
 }
 
@@ -101,6 +120,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(RETRIED_NOTIFICATIONS.to_owned()))
         .expect("Failed to register retried notifications metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(CALL_EXTERNAL_API.to_owned()))
+        .expect("Failed to register call external API metrics");
 
     prometheus
 }

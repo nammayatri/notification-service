@@ -6,7 +6,7 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use crate::common::utils::{diff_utc, get_redis_stream_id_with_seconds_offset_from_current_time};
+use crate::common::utils::{diff_utc, is_stream_id_less};
 use crate::common::{types::*, utils::decode_notification_payload};
 use crate::redis::keys::notification_duration_key;
 use crate::tools::prometheus::{EXPIRED_NOTIFICATIONS, RETRIED_NOTIFICATIONS};
@@ -21,7 +21,7 @@ use tokio::{
     time::interval,
 };
 use tonic::Status;
-use tracing::error;
+use tracing::{error, info};
 
 pub async fn run_notification_reader(
     mut read_notification_rx: Receiver<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
@@ -84,7 +84,6 @@ pub async fn run_notification_reader(
             },
             _ = retry_timer.tick() => {
                 let current_time = Utc::now();
-                let current_time_backward_by_offset = get_redis_stream_id_with_seconds_offset_from_current_time(current_time, reader_delay_seconds.try_into().unwrap());
                 let client_stream_keys: Vec<String> = clients_tx.keys().map(|ClientId(client_id)| client_id.to_string()).collect();
                 let client_stream_ids: Vec<String> = clients_tx.values().map(|(_, LastReadStreamEntry(last_read_stream_id))| last_read_stream_id.to_string()).collect();
                 if !client_stream_keys.is_empty() {
@@ -92,10 +91,9 @@ pub async fn run_notification_reader(
                         if let Ok(notifications) = decode_notification_payload(notifications) {
                             for (client_id, notifications) in notifications {
                                 for notification in notifications {
-                                    error!("NOTIFICATION notification : {:?} : {} : {} : {}", notification, client_id, current_time_backward_by_offset, notification.id < current_time_backward_by_offset);
-                                    if notification.id < current_time_backward_by_offset { // Notifications before reader delay seconds
+                                    if is_stream_id_less(notification.id.as_str(), clients_tx[&ClientId(client_id.to_owned())].1.0.as_str()) { // Older Sent Notifications to be sent again for retry
                                         let notification_ttl : DateTime<Utc> = notification.ttl.parse().unwrap();
-                                        error!("NOTIFICATION notification : {} : {} : {}", notification_ttl, current_time, notification_ttl < current_time);
+                                        info!("RETRY NOTIFICATION notification : {} : {} : {}", notification_ttl, current_time, notification_ttl < current_time);
                                         if notification_ttl < current_time {
                                             // Expired notifications
                                             EXPIRED_NOTIFICATIONS.inc();

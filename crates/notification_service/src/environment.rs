@@ -8,6 +8,7 @@
 #![allow(clippy::expect_used)]
 
 use rdkafka::{error::KafkaError, producer::FutureProducer, ClientConfig};
+use reqwest::Url;
 use serde::Deserialize;
 use shared::redis::types::{RedisConnectionPool, RedisSettings};
 use std::sync::Arc;
@@ -22,9 +23,17 @@ pub struct KafkaConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct InternalAuthConfig {
+    pub auth_url: String,
+    pub auth_api_key: String,
+    pub auth_token_expiry: u32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub port: u16,
     pub prometheus_port: u16,
+    pub internal_auth_cfg: InternalAuthConfig,
     pub logger_cfg: LoggerConfig,
     pub redis_cfg: RedisSettings,
     pub kafka_cfg: KafkaConfig,
@@ -35,6 +44,9 @@ pub struct AppConfig {
 #[derive(Clone)]
 pub struct AppState {
     pub redis_pool: Arc<RedisConnectionPool>,
+    pub auth_url: Url,
+    pub auth_api_key: String,
+    pub auth_token_expiry: u32,
     pub reader_delay_seconds: u64,
     pub retry_delay_seconds: u64,
     pub producer: Option<FutureProducer>,
@@ -75,6 +87,10 @@ impl AppState {
 
         AppState {
             redis_pool,
+            auth_url: Url::parse(app_config.internal_auth_cfg.auth_url.as_str())
+                .expect("Failed to parse auth_url."),
+            auth_api_key: app_config.internal_auth_cfg.auth_api_key,
+            auth_token_expiry: app_config.internal_auth_cfg.auth_token_expiry,
             reader_delay_seconds: app_config.reader_delay_seconds,
             retry_delay_seconds: app_config.retry_delay_seconds,
             producer,

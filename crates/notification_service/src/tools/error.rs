@@ -7,6 +7,7 @@
 */
 
 use serde::{Deserialize, Serialize};
+use tonic::Status;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,5 +20,18 @@ pub struct ErrorBody {
 pub enum AppError {
     InternalError(String),
     InvalidRequest(String),
-    PanicOccured(String),
+    DriverAppAuthFailed,
+    DriverAppUnauthorized,
+}
+
+impl From<AppError> for Status {
+    fn from(app_error: AppError) -> Self {
+        match app_error {
+            AppError::InternalError(message) => Status::internal(message),
+            AppError::InvalidRequest(message) => Status::invalid_argument(message),
+            AppError::DriverAppAuthFailed => Status::invalid_argument("AUTH_FAILED"),
+            AppError::DriverAppUnauthorized => Status::unauthenticated("UNAUTHORIZED"),
+            // _ => Status::unknown("Unknown error"),
+        }
+    }
 }

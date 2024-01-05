@@ -5,8 +5,20 @@
     or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details. You should have received a copy of
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
+use crate::common::types::*;
+use serde::Serialize;
 
-pub mod callapi;
-pub mod error;
-pub mod logger;
-pub mod prometheus;
+#[derive(Serialize, Clone, PartialEq)]
+pub enum NotificationStatus {
+    PENDING,
+    DELIVERED,
+    EXPIRED,
+}
+
+#[derive(Serialize)]
+pub struct Notification {
+    pub id: String,
+    pub retries: u32,
+    pub timestamp: TimeStamp,
+    pub status: NotificationStatus,
+}

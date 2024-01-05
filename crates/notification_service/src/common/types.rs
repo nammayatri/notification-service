@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct Token(pub String);
 
-#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ClientId(pub String);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Hash)]

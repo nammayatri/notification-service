@@ -8,6 +8,10 @@
 
 use crate::common::types::*;
 
+pub fn set_client_id_key(Token(token): &Token) -> String {
+    format!("notification:client_id:{token}")
+}
+
 pub fn notification_duration_key(NotificationId(notification_id): &NotificationId) -> String {
     format!("notifition:duration:{}", notification_id)
 }

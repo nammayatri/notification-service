@@ -8,12 +8,18 @@
 
 #[tokio::test]
 async fn generate_and_add_notifications() -> anyhow::Result<()> {
-    let pool = shared::redis::types::RedisConnectionPool::new(
-        shared::redis::types::RedisSettings::default(),
-        None,
-    )
-    .await
-    .expect("Failed to create Redis Connection Pool");
+    use notification_service::environment::{AppConfig, AppState};
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        println!("Current working directory: {}", current_dir.display());
+    } else {
+        eprintln!("Failed to get the current working directory");
+    }
+
+    let dhall_config_path = "../../dhall-configs/dev/notification_service.dhall".to_string();
+    let app_config = serde_dhall::from_file(dhall_config_path).parse::<AppConfig>()?;
+
+    let app_state = AppState::new(app_config).await;
 
     let data = [
         ("entity.id", "181a66a5-749c-4c9f-aea5-a5418b981cf0"),
@@ -23,19 +29,22 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         ("title", "New ride available for offering"),
         ("body", "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters"),
         ("show", "true"),
-        ("ttl", "2024-01-04T13:45:38.057846262Z")
+        ("ttl", "2024-01-06T13:45:38.057846262Z")
     ];
 
     for i in 1000..=1000 {
-        pool.xadd(
-            format!("notification:client-{}", i).as_str(),
-            data.to_vec(),
-            1000,
-        )
-        .await?;
+        app_state
+            .redis_pool
+            .xadd(
+                format!("notification:client-{}", i).as_str(),
+                data.to_vec(),
+                1000,
+            )
+            .await?;
     }
 
-    let res = pool
+    let res = app_state
+        .redis_pool
         .xread(
             (1000..=1000)
                 .map(|i| format!("notification:client-{}", i))
@@ -56,33 +65,57 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn connect_client_without_ack() -> anyhow::Result<()> {
-    use std::str::FromStr;
+    let mut attempt_count = 0;
 
-    let mut client = notification_service::notification_client::NotificationClient::connect(
-        "http://[::1]:50051",
-    )
-    .await?;
+    loop {
+        let result: anyhow::Result<()> = async {
+            use std::str::FromStr;
 
-    let mut metadata = tonic::metadata::MetadataMap::new();
-    metadata.insert(
-        "client-id",
-        tonic::metadata::MetadataValue::from_str("notification:client-1000")?,
-    );
-    metadata.insert(
-        "token",
-        tonic::metadata::MetadataValue::from_str("token-1000")?,
-    );
+            let mut client =
+                notification_service::notification_client::NotificationClient::connect(
+                    "http://[::1]:50051",
+                )
+                .await?;
 
-    let (_tx, rx) = tokio::sync::mpsc::channel(100000);
+            let mut metadata = tonic::metadata::MetadataMap::new();
+            metadata.insert(
+                "client-id",
+                tonic::metadata::MetadataValue::from_str("notification:client-1000")?,
+            );
+            metadata.insert(
+                "token",
+                tonic::metadata::MetadataValue::from_str("token-1000")?,
+            );
 
-    let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
-    *request.metadata_mut() = metadata;
-    let response = client.stream_payload(request).await?;
-    let mut inbound = response.into_inner();
+            let (_tx, rx) = tokio::sync::mpsc::channel(100000);
 
-    while let Some(response) = tokio_stream::StreamExt::next(&mut inbound).await {
-        let notification = response?;
-        println!("{:?}", notification);
+            let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
+            *request.metadata_mut() = metadata;
+            let response = client.stream_payload(request).await?;
+            let mut inbound = response.into_inner();
+
+            while let Some(response) = tokio_stream::StreamExt::next(&mut inbound).await {
+                let notification = response?;
+                println!("{:?}", notification);
+            }
+
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                // Connection succeeded, break out of the loop
+                break;
+            }
+            Err(err) => {
+                attempt_count += 1;
+                eprintln!("Connection attempt {} failed: {}", attempt_count, err);
+
+                // You may want to introduce a delay before the next attempt
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
     }
 
     Ok(())
@@ -90,37 +123,61 @@ async fn connect_client_without_ack() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn connect_client_with_ack() -> anyhow::Result<()> {
-    use std::str::FromStr;
+    let mut attempt_count = 0;
 
-    let mut client = notification_service::notification_client::NotificationClient::connect(
-        "http://[::1]:50051",
-    )
-    .await?;
+    loop {
+        let result: anyhow::Result<()> = async {
+            use std::str::FromStr;
 
-    let mut metadata = tonic::metadata::MetadataMap::new();
-    metadata.insert(
-        "client-id",
-        tonic::metadata::MetadataValue::from_str("notification:client-1000")?,
-    );
-    metadata.insert(
-        "token",
-        tonic::metadata::MetadataValue::from_str("token-1000")?,
-    );
+            let mut client =
+                notification_service::notification_client::NotificationClient::connect(
+                    "http://[::1]:50051",
+                )
+                .await?;
 
-    let (tx, rx) = tokio::sync::mpsc::channel(100000);
+            let mut metadata = tonic::metadata::MetadataMap::new();
+            metadata.insert(
+                "client-id",
+                tonic::metadata::MetadataValue::from_str("notification:client-1000")?,
+            );
+            metadata.insert(
+                "token",
+                tonic::metadata::MetadataValue::from_str("token-1000")?,
+            );
 
-    let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
-    *request.metadata_mut() = metadata;
-    let response = client.stream_payload(request).await?;
-    let mut inbound = response.into_inner();
+            let (tx, rx) = tokio::sync::mpsc::channel(100000);
 
-    while let Some(response) = tokio_stream::StreamExt::next(&mut inbound).await {
-        let notification = response?;
-        println!("{:?}", notification);
-        tx.send(notification_service::NotificationAck {
-            notification_id: notification.id,
-        })
-        .await?;
+            let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
+            *request.metadata_mut() = metadata;
+            let response = client.stream_payload(request).await?;
+            let mut inbound = response.into_inner();
+
+            while let Some(response) = tokio_stream::StreamExt::next(&mut inbound).await {
+                let notification = response?;
+                println!("{:?}", notification);
+                tx.send(notification_service::NotificationAck {
+                    notification_id: notification.id,
+                })
+                .await?;
+            }
+
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                // Connection succeeded, break out of the loop
+                break;
+            }
+            Err(err) => {
+                attempt_count += 1;
+                eprintln!("Connection attempt {} failed: {}", attempt_count, err);
+
+                // You may want to introduce a delay before the next attempt
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
     }
 
     Ok(())

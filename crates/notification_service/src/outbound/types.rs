@@ -6,7 +6,15 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-pub mod callapi;
-pub mod error;
-pub mod logger;
-pub mod prometheus;
+use serde::{Deserialize, Serialize};
+
+use crate::common::types::*;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthResponseData {
+    #[serde(rename = "driverId")]
+    pub client_id: ClientId,
+    pub merchant_id: String,
+    pub merchant_operating_city_id: String,
+}

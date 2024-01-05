@@ -17,18 +17,20 @@ use notification_service::environment::AppConfig;
 use notification_service::environment::AppState;
 use notification_service::notification_latency;
 use notification_service::notification_server::{Notification, NotificationServer};
+use notification_service::outbound::external::internal_authentication;
 use notification_service::reader::run_notification_reader;
+use notification_service::redis::commands::get_client_id;
+use notification_service::redis::commands::set_client_id;
 use notification_service::redis::keys::notification_duration_key;
+use notification_service::tools::error::AppError;
 use notification_service::tools::logger::setup_tracing;
 use notification_service::tools::prometheus::prometheus_metrics;
 use notification_service::tools::prometheus::CONNECTED_CLIENTS;
 use notification_service::tools::prometheus::NOTIFICATION_LATENCY;
 use notification_service::{NotificationAck, NotificationPayload};
-use shared::redis::types::RedisConnectionPool;
 use std::env::var;
 use std::net::Ipv4Addr;
 use std::pin::Pin;
-use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataMap;
@@ -38,17 +40,17 @@ use tracing::info;
 
 pub struct NotificationService {
     read_notification_tx: Sender<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
-    redis_pool: Arc<RedisConnectionPool>,
+    app_state: AppState,
 }
 
 impl NotificationService {
     pub fn new(
         read_notification_tx: Sender<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
-        redis_pool: Arc<RedisConnectionPool>,
+        app_state: AppState,
     ) -> Self {
         NotificationService {
             read_notification_tx,
-            redis_pool,
+            app_state,
         }
     }
 }
@@ -64,15 +66,46 @@ impl Notification for NotificationService {
     ) -> Result<Response<Self::StreamPayloadStream>, Status> {
         let metadata: &MetadataMap = request.metadata();
         let token = metadata.get("token").unwrap().to_str().unwrap().to_string();
-        let client_id = metadata
-            .get("client-id")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
+
+        let ClientId(client_id) =
+            match get_client_id(&self.app_state.redis_pool, &Token(token.to_owned())).await {
+                Ok(Some(client_id)) => Ok(client_id),
+                Ok(None) => {
+                    let response = internal_authentication(
+                        &self.app_state.auth_url,
+                        &token,
+                        &self.app_state.auth_api_key,
+                    )
+                    .await
+                    .map_err(|err| {
+                        AppError::InternalError(format!(
+                            "Internal Authentication Failed : {:?}",
+                            err
+                        ))
+                    })?;
+                    set_client_id(
+                        &self.app_state.redis_pool,
+                        &self.app_state.auth_token_expiry,
+                        &Token(token.to_owned()),
+                        &response.client_id,
+                    )
+                    .await
+                    .map_err(|err| {
+                        AppError::InternalError(format!(
+                            "Internal Authentication Failed : {:?}",
+                            err
+                        ))
+                    })?;
+                    Ok(response.client_id)
+                }
+                Err(err) => Err(AppError::InternalError(format!(
+                    "Internal Authentication Failed : {:?}",
+                    err
+                ))),
+            }?;
 
         CONNECTED_CLIENTS.inc();
-        info!("Connection Successful - clientId : {client_id} - token : {token}");
+        info!("Connection Successful - ClientId : {client_id} - token : {token}");
 
         let (client_tx, client_rx) = mpsc::channel(100000);
 
@@ -85,7 +118,7 @@ impl Notification for NotificationService {
             println!("Failed to send to notification reader: {:?}", e);
         }
 
-        let redis_pool = self.redis_pool.clone();
+        let redis_pool = self.app_state.redis_pool.clone();
         tokio::spawn(async move {
             let mut stream = request.into_inner();
 
@@ -93,13 +126,19 @@ impl Notification for NotificationService {
             while let Ok(Some(ack)) = stream.message().await {
                 if let Ok(Some(Timestamp(start_time))) = redis_pool
                     .get_key::<Timestamp>(
-                        notification_duration_key(&NotificationId(ack.notification_id.clone()))
+                        notification_duration_key(&NotificationId(ack.notification_id.to_owned()))
                             .as_str(),
                     )
                     .await
                 {
                     notification_latency!(start_time);
                 }
+                let _ = redis_pool
+                    .delete_key(
+                        notification_duration_key(&NotificationId(ack.notification_id.to_owned()))
+                            .as_str(),
+                    )
+                    .await;
                 let _ = redis_pool
                     .xdel(client_id.as_str(), ack.notification_id.as_str())
                     .await;
@@ -143,8 +182,7 @@ async fn main() -> Result<()> {
         .run();
 
     let addr = format!("[::1]:{}", app_state.port).parse()?;
-    let notification_service =
-        NotificationService::new(read_notification_tx, app_state.redis_pool.clone());
+    let notification_service = NotificationService::new(read_notification_tx, app_state);
     let grpc_server = Server::builder()
         .add_service(NotificationServer::new(notification_service))
         .serve(addr);
