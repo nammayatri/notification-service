@@ -26,23 +26,10 @@ pub struct AppConfig {
     pub port: u16,
     pub prometheus_port: u16,
     pub logger_cfg: LoggerConfig,
-    pub redis_cfg: RedisConfig,
+    pub redis_cfg: RedisSettings,
     pub kafka_cfg: KafkaConfig,
     pub reader_delay_seconds: u64,
     pub retry_delay_seconds: u64,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct RedisConfig {
-    pub redis_host: String,
-    pub redis_port: u16,
-    pub redis_pool_size: usize,
-    pub redis_partition: usize,
-    pub reconnect_max_attempts: u32,
-    pub reconnect_delay: u32,
-    pub default_ttl: u32,
-    pub default_hash_ttl: u32,
-    pub stream_read_count: u64,
 }
 
 #[derive(Clone)]
@@ -58,22 +45,9 @@ pub struct AppState {
 impl AppState {
     pub async fn new(app_config: AppConfig) -> AppState {
         let redis_pool = Arc::new(
-            RedisConnectionPool::new(
-                RedisSettings::new(
-                    app_config.redis_cfg.redis_host,
-                    app_config.redis_cfg.redis_port,
-                    app_config.redis_cfg.redis_pool_size,
-                    app_config.redis_cfg.redis_partition,
-                    app_config.redis_cfg.reconnect_max_attempts,
-                    app_config.redis_cfg.reconnect_delay,
-                    app_config.redis_cfg.default_ttl,
-                    app_config.redis_cfg.default_hash_ttl,
-                    app_config.redis_cfg.stream_read_count,
-                ),
-                None,
-            )
-            .await
-            .expect("Failed to create Redis connection pool"),
+            RedisConnectionPool::new(app_config.redis_cfg, None)
+                .await
+                .expect("Failed to create Redis connection pool"),
         );
 
         let producer: Option<FutureProducer>;

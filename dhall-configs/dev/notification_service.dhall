@@ -1,13 +1,16 @@
 let redis_cfg = {
-    redis_host = "0.0.0.0",
-    redis_port = 6379,
-    redis_pool_size = 10,
-    redis_partition = 0,
+    host = "0.0.0.0",
+    port = 30001,
+    cluster_enabled = True,
+    cluster_urls = [],
+    use_legacy_version = False,
+    pool_size = 10,
     reconnect_max_attempts = 10,
     reconnect_delay = 5000,
     default_ttl = 3600,
     default_hash_ttl = 3600,
     stream_read_count = 100,
+    partition = 0,
 }
 
 let LogLevel = < TRACE | DEBUG | INFO | WARN | ERROR | OFF >
