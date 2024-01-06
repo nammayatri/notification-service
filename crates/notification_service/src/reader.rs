@@ -6,23 +6,28 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use crate::common::types::*;
-use crate::common::utils::is_stream_id_less;
-use crate::kafka::producers::kafka_stream_notification_updates;
-use crate::kafka::types::NotificationStatus;
-use crate::redis::commands::{
-    clean_up_notification, get_client_last_sent_notification, get_notification_start_time,
-    read_client_notifications, set_clients_last_sent_notification, set_notification_start_time,
+use crate::{
+    common::{types::*, utils::is_stream_id_less},
+    kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
+    redis::commands::{
+        clean_up_notification, get_client_last_sent_notification, get_notification_start_time,
+        read_client_notifications, set_clients_last_sent_notification, set_notification_start_time,
+    },
+    tools::prometheus::{EXPIRED_NOTIFICATIONS, RETRIED_NOTIFICATIONS},
+    NotificationPayload,
 };
-use crate::tools::prometheus::{EXPIRED_NOTIFICATIONS, RETRIED_NOTIFICATIONS};
-use crate::NotificationPayload;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rdkafka::producer::FutureProducer;
 use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{
     sync::mpsc::{Receiver, Sender},
     time::interval,

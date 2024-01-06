@@ -6,8 +6,10 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 use super::types::*;
-use crate::tools::callapi::{call_api, CallApiError};
-use crate::tools::error::AppError;
+use crate::tools::{
+    callapi::{call_api, CallApiError},
+    error::AppError,
+};
 use actix_http::StatusCode;
 use anyhow::Result;
 use reqwest::{Method, Url};

@@ -6,48 +6,45 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use actix_web::web;
-use actix_web::App;
-use actix_web::HttpResponse;
-use actix_web::HttpServer;
+use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::Result;
-use chrono::DateTime;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::Stream;
-use notification_service::common::types::*;
-use notification_service::common::utils::abs_diff_utc_as_sec;
-use notification_service::environment::AppConfig;
-use notification_service::environment::AppState;
-use notification_service::kafka::producers::kafka_stream_notification_updates;
-use notification_service::kafka::types::NotificationStatus;
-use notification_service::notification_latency;
-use notification_service::notification_server::{Notification, NotificationServer};
-use notification_service::outbound::external::internal_authentication;
-use notification_service::reader::run_notification_reader;
-use notification_service::redis::commands::clean_up_notification;
-use notification_service::redis::commands::get_client_id;
-use notification_service::redis::commands::get_notification_start_time;
-use notification_service::redis::commands::set_client_id;
-use notification_service::tools::error::AppError;
-use notification_service::tools::logger::setup_tracing;
-use notification_service::tools::prometheus::prometheus_metrics;
-use notification_service::tools::prometheus::CONNECTED_CLIENTS;
-use notification_service::tools::prometheus::NOTIFICATION_LATENCY;
-use notification_service::{NotificationAck, NotificationPayload};
+use notification_service::{
+    common::{types::*, utils::abs_diff_utc_as_sec},
+    environment::{AppConfig, AppState},
+    kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
+    notification_latency,
+    notification_server::{Notification, NotificationServer},
+    outbound::external::internal_authentication,
+    reader::run_notification_reader,
+    redis::commands::{
+        clean_up_notification, get_client_id, get_notification_start_time, set_client_id,
+    },
+    tools::{
+        error::AppError,
+        logger::setup_tracing,
+        prometheus::{prometheus_metrics, CONNECTED_CLIENTS, NOTIFICATION_LATENCY},
+    },
+    NotificationAck, NotificationPayload,
+};
 use reqwest::Url;
 use shared::redis::types::RedisConnectionPool;
-use std::env::var;
-use std::net::Ipv4Addr;
-use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use tokio::signal::unix::signal;
-use tokio::signal::unix::SignalKind;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use std::{
+    env::var,
+    net::Ipv4Addr,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
+use tokio::{
+    signal::unix::{signal, SignalKind},
+    sync::mpsc::{self, Receiver, Sender},
+};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::metadata::MetadataMap;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{metadata::MetadataMap, transport::Server, Request, Response, Status};
 use tracing::*;
 
 pub struct NotificationService {

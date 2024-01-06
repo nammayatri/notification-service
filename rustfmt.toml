@@ -3,3 +3,5 @@
 
 # Control the formatting of chains (method/field access)
 # chain_width = 1000  # setting this to a higher value can also prevent wrapping
+
+imports_granularity = "Crate" # Preserve, Crate, Module, Item, One
