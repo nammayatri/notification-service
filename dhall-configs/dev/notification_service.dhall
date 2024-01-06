@@ -38,6 +38,8 @@ in {
     logger_cfg = logger_cfg,
     redis_cfg = redis_cfg,
     kafka_cfg = kafka_cfg,
+    last_known_notification_cache_expiry = 86400,
+    notification_kafka_topic = "notification-stats",
     reader_delay_seconds = 1,
     retry_delay_seconds = 5,
 }

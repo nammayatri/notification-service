@@ -6,48 +6,31 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 use super::types::*;
-use crate::{
-    common::{kafka::push_to_kafka, types::*},
-    domain::types::ui::location::UpdateDriverLocationRequest,
-};
-use chrono::Utc;
-use log::error;
+use crate::{common::types::*, tools::kafka::push_to_kafka};
 use rdkafka::producer::FutureProducer;
+use tracing::*;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn kafka_stream_notification_updates(
     producer: &Option<FutureProducer>,
     topic: &str,
-    locations: Vec<UpdateDriverLocationRequest>,
-    merchant_id: MerchantId,
-    ride_id: Option<RideId>,
-    ride_status: Option<RideStatus>,
-    driver_mode: DriverMode,
-    ClientId(key): &ClientId,
+    client_id: &str,
+    notification_id: String,
+    retries: u32,
+    status: NotificationStatus,
+    created_at: Timestamp,
+    picked_at: Timestamp,
+    delivered_at: Option<Timestamp>,
 ) {
-    let ride_status = match ride_status {
-        Some(RideStatus::NEW) => DriverRideStatus::OnPickup,
-        Some(RideStatus::INPROGRESS) => DriverRideStatus::OnRide,
-        _ => DriverRideStatus::IDLE,
+    let message = Notification {
+        id: notification_id,
+        retries,
+        status,
+        created_at,
+        picked_at,
+        delivered_at,
     };
-
-    for loc in locations {
-        let message = LocationUpdate {
-            rid: ride_id.to_owned(),
-            mid: merchant_id.to_owned(),
-            ts: loc.ts,
-            st: TimeStamp(Utc::now()),
-            lat: loc.pt.lat,
-            lon: loc.pt.lon,
-            speed: loc.v.unwrap_or(SpeedInMeterPerSecond(0.0)),
-            acc: loc.acc.unwrap_or(Accuracy(0.0)),
-            ride_status: ride_status.to_owned(),
-            on_ride: ride_status != DriverRideStatus::IDLE,
-            active: true,
-            mode: driver_mode.to_owned(),
-        };
-        if let Err(err) = push_to_kafka(producer, topic, key.as_str(), message).await {
-            error!("Error occured in push_to_kafka => {}", err.message())
-        }
+    if let Err(err) = push_to_kafka(producer, topic, client_id, message).await {
+        error!("Error occured in push_to_kafka => {:?}", err)
     }
 }

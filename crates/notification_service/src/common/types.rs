@@ -28,10 +28,3 @@ impl Default for LastReadStreamEntry {
         Self("0-0".to_string())
     }
 }
-
-#[derive(Deserialize, Serialize, Clone)]
-pub enum NotificationStatus {
-    Sent,
-    Delivered,
-    Expired,
-}

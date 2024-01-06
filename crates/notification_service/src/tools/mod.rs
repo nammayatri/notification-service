@@ -8,5 +8,6 @@
 
 pub mod callapi;
 pub mod error;
+pub mod kafka;
 pub mod logger;
 pub mod prometheus;

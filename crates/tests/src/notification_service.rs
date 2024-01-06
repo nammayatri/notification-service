@@ -29,6 +29,7 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         ("title", "New ride available for offering"),
         ("body", "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters"),
         ("show", "true"),
+        ("created_at", "2024-01-01T13:45:38.057846262Z"),
         ("ttl", "2024-01-06T13:45:38.057846262Z")
     ];
 
@@ -156,7 +157,8 @@ async fn connect_client_with_ack() -> anyhow::Result<()> {
                 let notification = response?;
                 println!("{:?}", notification);
                 tx.send(notification_service::NotificationAck {
-                    notification_id: notification.id,
+                    id: notification.id,
+                    created_at: notification.created_at,
                 })
                 .await?;
             }

@@ -52,11 +52,11 @@ pub static CALL_EXTERNAL_API: once_cell::sync::Lazy<HistogramVec> =
 macro_rules! notification_latency {
     ($start:expr) => {
         let now = Utc::now();
-        let duration = diff_utc($start, now);
+        let duration = abs_diff_utc_as_sec($start, now);
         let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
         NOTIFICATION_LATENCY
             .with_label_values(&[version.as_str()])
-            .observe(duration.num_seconds() as f64);
+            .observe(duration as f64);
     };
 }
 

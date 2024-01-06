@@ -7,14 +7,42 @@
 */
 
 use super::keys::*;
-use crate::common::types::*;
+use crate::{
+    common::{
+        types::*,
+        utils::{abs_diff_utc_as_sec, decode_notification_payload},
+    },
+    NotificationPayload,
+};
 use anyhow::Result;
+use chrono::{DateTime, Utc};
+use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
+
+pub async fn read_client_notifications(
+    redis_pool: &RedisConnectionPool,
+    clients_last_seen_notification_id: Vec<(ClientId, LastReadStreamEntry)>,
+) -> Result<FxHashMap<String, Vec<NotificationPayload>>> {
+    let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
+        clients_last_seen_notification_id
+            .into_iter()
+            .map(|(ClientId(client_id), LastReadStreamEntry(last_entry))| (client_id, last_entry))
+            .unzip();
+
+    if !client_stream_keys.is_empty() {
+        let notifications = redis_pool
+            .xread(client_stream_keys.to_owned(), client_stream_ids.to_owned())
+            .await?;
+        Ok(decode_notification_payload(notifications)?)
+    } else {
+        Ok(FxHashMap::default())
+    }
+}
 
 pub async fn set_client_id(
     redis_pool: &RedisConnectionPool,
     auth_token_expiry: &u32,
-    token: &Token,
+    token: &str,
     ClientId(client_id): &ClientId,
 ) -> Result<()> {
     redis_pool
@@ -25,10 +53,75 @@ pub async fn set_client_id(
 
 pub async fn get_client_id(
     redis_pool: &RedisConnectionPool,
-    token: &Token,
+    token: &str,
 ) -> Result<Option<ClientId>> {
     Ok(redis_pool
         .get_key_as_str(&set_client_id_key(token))
         .await?
         .map(ClientId))
+}
+
+pub async fn set_notification_start_time(
+    redis_pool: &RedisConnectionPool,
+    notification_id: &str,
+    notification_ttl: DateTime<Utc>,
+) -> Result<()> {
+    let now = Utc::now();
+    redis_pool
+        .set_key(
+            &notification_duration_key(notification_id),
+            Timestamp(now),
+            abs_diff_utc_as_sec(now, notification_ttl) as u32,
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn get_notification_start_time(
+    redis_pool: &RedisConnectionPool,
+    notification_id: &str,
+) -> Result<Option<Timestamp>> {
+    Ok(redis_pool
+        .get_key::<Timestamp>(&notification_duration_key(notification_id))
+        .await?)
+}
+
+pub async fn clean_up_notification(
+    redis_pool: &RedisConnectionPool,
+    client_id: &str,
+    notification_id: &str,
+) -> Result<()> {
+    redis_pool
+        .delete_key(&notification_duration_key(notification_id))
+        .await?;
+    redis_pool.xdel(client_id, notification_id).await?;
+    Ok(())
+}
+
+pub async fn set_clients_last_sent_notification(
+    redis_pool: &RedisConnectionPool,
+    clients_last_seen_notification_id: Vec<(ClientId, LastReadStreamEntry)>,
+    expiry_time: u32,
+) -> Result<()> {
+    for (ClientId(client_id), LastReadStreamEntry(last_seen_notification_id)) in
+        clients_last_seen_notification_id
+    {
+        redis_pool
+            .set_key(
+                &set_last_sent_client_notification_key(&client_id),
+                last_seen_notification_id,
+                expiry_time,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+pub async fn get_client_last_sent_notification(
+    redis_pool: &RedisConnectionPool,
+    ClientId(client_id): &ClientId,
+) -> Result<Option<LastReadStreamEntry>> {
+    Ok(redis_pool
+        .get_key::<LastReadStreamEntry>(&set_last_sent_client_notification_key(client_id))
+        .await?)
 }

@@ -10,7 +10,6 @@ use serde::Serialize;
 
 #[derive(Serialize, Clone, PartialEq)]
 pub enum NotificationStatus {
-    PENDING,
     DELIVERED,
     EXPIRED,
 }
@@ -19,6 +18,8 @@ pub enum NotificationStatus {
 pub struct Notification {
     pub id: String,
     pub retries: u32,
-    pub timestamp: TimeStamp,
     pub status: NotificationStatus,
+    pub created_at: Timestamp,
+    pub picked_at: Timestamp,
+    pub delivered_at: Option<Timestamp>,
 }

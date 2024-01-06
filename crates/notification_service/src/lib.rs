@@ -10,6 +10,7 @@ tonic::include_proto!("notification_service");
 
 pub mod common;
 pub mod environment;
+pub mod kafka;
 pub mod outbound;
 pub mod reader;
 pub mod redis;

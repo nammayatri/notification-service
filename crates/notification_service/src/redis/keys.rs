@@ -6,12 +6,14 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use crate::common::types::*;
-
-pub fn set_client_id_key(Token(token): &Token) -> String {
+pub fn set_client_id_key(token: &str) -> String {
     format!("notification:client_id:{token}")
 }
 
-pub fn notification_duration_key(NotificationId(notification_id): &NotificationId) -> String {
+pub fn set_last_sent_client_notification_key(client_id: &str) -> String {
+    format!("notification:last_sent_client_notification:{client_id}")
+}
+
+pub fn notification_duration_key(notification_id: &str) -> String {
     format!("notifition:duration:{}", notification_id)
 }

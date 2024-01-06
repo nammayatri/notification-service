@@ -8,9 +8,9 @@
 
 use std::cmp::Ordering;
 
-use crate::NotificationPayload;
+use crate::{tools::error::AppError, NotificationPayload};
 use anyhow::Result;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -25,10 +25,18 @@ pub fn decode_nested_json<T: DeserializeOwned>(payload: Vec<(String, String)>) -
             if i == parts.len() - 1 {
                 current_obj[part] = serde_json::Value::String(value.to_string());
             } else {
-                if !current_obj.as_object().unwrap().contains_key(*part) {
+                if !current_obj
+                    .as_object()
+                    .ok_or_else(|| {
+                        AppError::InternalError("Error in decode_nested_json.".to_string())
+                    })?
+                    .contains_key(*part)
+                {
                     current_obj[part] = json!({});
                 }
-                current_obj = current_obj.get_mut(part).unwrap();
+                current_obj = current_obj.get_mut(part).ok_or_else(|| {
+                    AppError::InternalError("Error in decode_nested_json.".to_string())
+                })?;
             }
         }
     }
@@ -79,6 +87,6 @@ pub fn is_stream_id_less(id1: &str, id2: &str) -> bool {
     }
 }
 
-pub fn diff_utc(old: DateTime<Utc>, new: DateTime<Utc>) -> Duration {
-    new.signed_duration_since(old)
+pub fn abs_diff_utc_as_sec(old: DateTime<Utc>, new: DateTime<Utc>) -> u64 {
+    new.signed_duration_since(old).num_seconds().abs_diff(0)
 }

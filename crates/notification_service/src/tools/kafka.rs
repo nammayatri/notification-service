@@ -7,24 +7,29 @@
 */
 use std::time::Duration;
 
-use crate::tools::error::AppError;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
 };
 use serde::Serialize;
 
+#[macros::add_error]
+pub enum KafkaError {
+    SerializationError(String),
+    PushFailed(String),
+}
+
 pub async fn push_to_kafka<T>(
     producer: &Option<FutureProducer>,
     topic: &str,
     key: &str,
     message: T,
-) -> Result<(), AppError>
+) -> Result<(), KafkaError>
 where
     T: Serialize,
 {
     let message = serde_json::to_string(&message)
-        .map_err(|err| AppError::SerializationError(err.to_string()))?;
+        .map_err(|err| KafkaError::SerializationError(err.to_string()))?;
 
     match producer {
         Some(producer) => {
@@ -34,11 +39,11 @@ where
                     Timeout::After(Duration::from_secs(1)),
                 )
                 .await
-                .map_err(|err| AppError::KafkaPushFailed(err.0.to_string()))?;
+                .map_err(|err| KafkaError::PushFailed(err.0.to_string()))?;
 
             Ok(())
         }
-        None => Err(AppError::KafkaPushFailed(
+        None => Err(KafkaError::PushFailed(
             "[Kafka] Producer is None, unable to send message".to_string(),
         )),
     }
