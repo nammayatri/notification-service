@@ -9,3 +9,4 @@ pico.save
 /.direnv
 /result
 /.pre-commit-config.yaml
+/crates/result
