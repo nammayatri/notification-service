@@ -54,21 +54,17 @@ gRPC is a high-performance, widely adopted RPC framework with standardized imple
 
 ### Nix
 
-1. [Install **Nix**](https://github.com/DeterminateSystems/nix-installer#the-determinate-nix-installer)
-    - If you already have Nix installed, you must [enable Flakes](https://nixos.wiki/wiki/Flakes#Enable_flakes) manually.
-    - Then, run the following to check that everything is green ✅.
-        ```sh
-        nix run nixpkgs#nix-health
-        ```
-1. [Optional] Setup the Nix **binary cache**:
+1. [Install **Nix**](https://nixos.asia/en/install)
+1. Run `nix run nixpkgs#nix-health` and make sure that everything is green (✅)
+1. Setup the Nix **binary cache** (to avoid compiling locally for hours):
     ```sh
     nix run nixpkgs#cachix use nammayatri
     ```
-    - For this command to succeed, you must have added yourself to the `trusted-users` list of `nix.conf`
-1. Install **home-manager**[^hm] and setup **nix-direnv** and **starship** by following the instructions [in this home-manager template](https://github.com/juspay/nix-dev-home).[^direnv] [You want this](https://haskell.flake.page/direnv) to facilitate a nice Nix develoment environment.
+    - For this command to succeed, you should add yourself to the `trusted-users` list of `nix.conf` and then restart the Nix daemon using `sudo pkill nix-daemon`.
+1. Install **home-manager**[^hm] and setup **nix-direnv** and **starship** by following the instructions [in this home-manager template](https://github.com/juspay/nix-dev-home).[^direnv] You want this to facilitate a nice Nix develoment environment. Read more about direnv [here](https://nixos.asia/en/direnv).
 
 [^hm]: Unless you are using NixOS in which case home-manager is not strictly needed.
-[^direnv]: Not strictly required to develop the project. If you do not use `direnv` however you would have to remember to manually restart the `nix develop` shell, and know when exactly to do this each time.
+[^direnv]: Not strictly required to develop nammayatri. If you do not use `direnv` however you would have to remember to manually restart the `nix develop` shell, and know when exactly to do this each time.
 
 ### Rust
 
