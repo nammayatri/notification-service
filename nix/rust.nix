@@ -16,16 +16,20 @@
         buildInputs = lib.optionals pkgs.stdenv.isDarwin
           (with pkgs.darwin.apple_sdk.frameworks; [
             Security
+            SystemConfiguration
           ]) ++ [
           pkgs.libiconv
           pkgs.openssl
           pkgs.rdkafka
+          pkgs.cyrus_sasl
         ];
         nativeBuildInputs = [
           pkgs.pkg-config
           pkgs.cmake
           pkgs.protobuf
         ];
+        # needed to dynamically link rdkafka
+        CARGO_FEATURE_DYNAMIC_LINKING = 1;
       };
       cargoArtifacts = craneLib.buildDepsOnly args;
       package = craneLib.buildPackage (args // {
