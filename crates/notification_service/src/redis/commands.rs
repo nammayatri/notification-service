@@ -6,13 +6,10 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use super::keys::*;
-use crate::{
-    common::{
-        types::*,
-        utils::{abs_diff_utc_as_sec, decode_notification_payload},
-    },
-    NotificationPayload,
+use super::{keys::*, types::NotificationData};
+use crate::common::{
+    types::*,
+    utils::{abs_diff_utc_as_sec, decode_stream},
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -21,19 +18,19 @@ use shared::redis::types::RedisConnectionPool;
 
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
-    clients_last_seen_notification_id: Vec<(ClientId, LastReadStreamEntry)>,
-) -> Result<FxHashMap<String, Vec<NotificationPayload>>> {
+    clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
+) -> Result<FxHashMap<String, Vec<NotificationData>>> {
     let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
         clients_last_seen_notification_id
             .into_iter()
-            .map(|(ClientId(client_id), LastReadStreamEntry(last_entry))| (client_id, last_entry))
+            .map(|(ClientId(client_id), StreamEntry(last_entry))| (client_id, last_entry))
             .unzip();
 
     if !client_stream_keys.is_empty() {
         let notifications = redis_pool
             .xread(client_stream_keys.to_owned(), client_stream_ids.to_owned())
             .await?;
-        Ok(decode_notification_payload(notifications)?)
+        Ok(decode_stream::<NotificationData>(notifications)?)
     } else {
         Ok(FxHashMap::default())
     }
@@ -100,10 +97,10 @@ pub async fn clean_up_notification(
 
 pub async fn set_clients_last_sent_notification(
     redis_pool: &RedisConnectionPool,
-    clients_last_seen_notification_id: Vec<(ClientId, LastReadStreamEntry)>,
+    clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
     expiry_time: u32,
 ) -> Result<()> {
-    for (ClientId(client_id), LastReadStreamEntry(last_seen_notification_id)) in
+    for (ClientId(client_id), StreamEntry(last_seen_notification_id)) in
         clients_last_seen_notification_id
     {
         redis_pool
@@ -120,8 +117,8 @@ pub async fn set_clients_last_sent_notification(
 pub async fn get_client_last_sent_notification(
     redis_pool: &RedisConnectionPool,
     ClientId(client_id): &ClientId,
-) -> Result<Option<LastReadStreamEntry>> {
+) -> Result<Option<StreamEntry>> {
     Ok(redis_pool
-        .get_key::<LastReadStreamEntry>(&set_last_sent_client_notification_key(client_id))
+        .get_key::<StreamEntry>(&set_last_sent_client_notification_key(client_id))
         .await?)
 }

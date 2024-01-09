@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 
-use crate::{tools::error::AppError, NotificationPayload};
+use crate::{redis::types::NotificationData, tools::error::AppError, Entity, NotificationPayload};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rustc_hash::FxHashMap;
@@ -47,16 +47,19 @@ pub fn decode_nested_json<T: DeserializeOwned>(payload: Vec<(String, String)>) -
     Ok(payload)
 }
 
-pub fn decode_notification_payload(
+pub fn decode_stream<T>(
     notifications: FxHashMap<String, Vec<Vec<(String, String)>>>,
-) -> Result<FxHashMap<String, Vec<NotificationPayload>>> {
+) -> Result<FxHashMap<String, Vec<T>>>
+where
+    T: DeserializeOwned,
+{
     let mut result = FxHashMap::default();
 
     for (key, notifications) in notifications {
         let mut payloads = Vec::new();
 
         for notification in notifications {
-            let payload = decode_nested_json::<NotificationPayload>(notification)?;
+            let payload = decode_nested_json::<T>(notification)?;
             payloads.push(payload);
         }
 
@@ -89,4 +92,24 @@ pub fn is_stream_id_less(id1: &str, id2: &str) -> bool {
 
 pub fn abs_diff_utc_as_sec(old: DateTime<Utc>, new: DateTime<Utc>) -> u64 {
     new.signed_duration_since(old).num_seconds().abs_diff(0)
+}
+
+pub fn transform_notification_data_to_payload(
+    notification: NotificationData,
+) -> NotificationPayload {
+    let entity = Entity {
+        id: notification.entity.id,
+        r#type: notification.entity._type,
+        data: notification.entity.data,
+    };
+    NotificationPayload {
+        id: notification.id.0,
+        category: notification.category,
+        title: notification.title,
+        body: notification.body,
+        show: notification.show,
+        created_at: notification.created_at.to_string(),
+        ttl: notification.ttl.to_string(),
+        entity: Some(entity),
+    }
 }

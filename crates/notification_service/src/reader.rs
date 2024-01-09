@@ -7,7 +7,10 @@
 */
 
 use crate::{
-    common::{types::*, utils::is_stream_id_less},
+    common::{
+        types::*,
+        utils::{is_stream_id_less, transform_notification_data_to_payload},
+    },
     kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
     redis::commands::{
         clean_up_notification, get_client_last_sent_notification, get_notification_start_time,
@@ -39,7 +42,7 @@ async fn clean_up_expired_notification(
     redis_pool: &RedisConnectionPool,
     client_id: &str,
     notification_id: &str,
-    notification_created_at: &str,
+    notification_created_at: DateTime<Utc>,
     kafka_producer: &Option<FutureProducer>,
     kafka_topic: &str,
 ) {
@@ -47,33 +50,31 @@ async fn clean_up_expired_notification(
 
     match get_notification_start_time(redis_pool, notification_id).await {
         Ok(Some(start_time)) => {
-            if let Ok(created_at) = notification_created_at.parse::<DateTime<Utc>>() {
-                let (
-                    cloned_kafka_producer,
-                    cloned_kafka_topic,
-                    cloned_client_id,
+            let (
+                cloned_kafka_producer,
+                cloned_kafka_topic,
+                cloned_client_id,
+                cloned_notification_id,
+            ) = (
+                kafka_producer.clone(),
+                kafka_topic.to_string(),
+                client_id.to_string(),
+                notification_id.to_string(),
+            );
+            tokio::spawn(async move {
+                let _ = kafka_stream_notification_updates(
+                    &cloned_kafka_producer,
+                    &cloned_kafka_topic,
+                    &cloned_client_id,
                     cloned_notification_id,
-                ) = (
-                    kafka_producer.clone(),
-                    kafka_topic.to_string(),
-                    client_id.to_string(),
-                    notification_id.to_string(),
-                );
-                tokio::spawn(async move {
-                    let _ = kafka_stream_notification_updates(
-                        &cloned_kafka_producer,
-                        &cloned_kafka_topic,
-                        &cloned_client_id,
-                        cloned_notification_id,
-                        0,
-                        NotificationStatus::EXPIRED,
-                        Timestamp(created_at),
-                        start_time,
-                        None,
-                    )
-                    .await;
-                });
-            }
+                    0,
+                    NotificationStatus::EXPIRED,
+                    Timestamp(notification_created_at),
+                    start_time,
+                    None,
+                )
+                .await;
+            });
         }
         Ok(None) => error!("Notification Start Time Not Found"),
         Err(err) => {
@@ -86,14 +87,8 @@ async fn clean_up_expired_notification(
 
 #[allow(clippy::type_complexity)]
 fn get_clients_last_seen_notification_id(
-    clients_tx: &FxHashMap<
-        ClientId,
-        (
-            Sender<Result<NotificationPayload, Status>>,
-            LastReadStreamEntry,
-        ),
-    >,
-) -> Vec<(ClientId, LastReadStreamEntry)> {
+    clients_tx: &FxHashMap<ClientId, (Sender<Result<NotificationPayload, Status>>, StreamEntry)>,
+) -> Vec<(ClientId, StreamEntry)> {
     clients_tx
         .iter()
         .map(|(client_id, (_, last_read_stream_entry))| {
@@ -115,10 +110,7 @@ pub async fn run_notification_reader(
 ) {
     let mut clients_tx: FxHashMap<
         ClientId,
-        (
-            Sender<Result<NotificationPayload, Status>>,
-            LastReadStreamEntry,
-        ),
+        (Sender<Result<NotificationPayload, Status>>, StreamEntry),
     > = FxHashMap::default();
     let mut reader_timer = interval(Duration::from_secs(reader_delay_seconds));
     let mut retry_timer = interval(Duration::from_secs(retry_delay_seconds));
@@ -142,7 +134,7 @@ pub async fn run_notification_reader(
                 match item {
                     Some((client_id, client_tx)) => {
                         let last_read_notification_id = get_client_last_sent_notification(&redis_pool, &client_id).await;
-                        clients_tx.insert(client_id, (client_tx, last_read_notification_id.map_or(LastReadStreamEntry::default(), |notification_id| notification_id.unwrap_or_default())));
+                        clients_tx.insert(client_id, (client_tx, last_read_notification_id.map_or(StreamEntry::default(), |notification_id| notification_id.unwrap_or_default())));
                     },
                     None => {
                         error!("[Client Failed to Connect]");
@@ -155,20 +147,16 @@ pub async fn run_notification_reader(
                     Ok(notifications) => {
                         for (client_id, notifications) in notifications {
                             for notification in notifications {
-                                if let Ok(notification_ttl) = notification.ttl.parse::<DateTime<Utc>>() {
-                                    if notification_ttl < Utc::now() {
-                                        // Expired Notification
-                                        let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id, &notification.created_at, &kafka_producer, &kafka_topic).await;
-                                    } else {
-                                        // Send Notifications
-                                        if let Some((_, LastReadStreamEntry(last_read_stream_id))) = clients_tx.get_mut(&ClientId(client_id.to_string())) {
-                                            *last_read_stream_id = notification.id.to_owned();
-                                        }
-                                        let _ = set_notification_start_time(&redis_pool, &notification.id, notification_ttl).await;
-                                        let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(notification)).await;
-                                    }
+                                if notification.ttl < Utc::now() {
+                                    // Expired Notification
+                                    let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.0, notification.created_at, &kafka_producer, &kafka_topic).await;
                                 } else {
-                                    error!("Error in parsing notification TTL for notification : {:?}", notification);
+                                    // Send Notifications
+                                    if let Some((_, last_read_stream_id)) = clients_tx.get_mut(&ClientId(client_id.to_string())) {
+                                        *last_read_stream_id = notification.stream_id.to_owned();
+                                    }
+                                    let _ = set_notification_start_time(&redis_pool, &notification.id.0, notification.ttl).await;
+                                    let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
                                 }
                             }
                         }
@@ -181,18 +169,14 @@ pub async fn run_notification_reader(
                     Ok(notifications) => {
                         for (client_id, notifications) in notifications {
                             for notification in notifications {
-                                if is_stream_id_less(notification.id.as_str(), clients_tx[&ClientId(client_id.to_owned())].1.0.as_str()) { // Older Sent Notifications to be sent again for retry
-                                    if let Ok(notification_ttl) = notification.ttl.parse::<DateTime<Utc>>() {
-                                        if notification_ttl < Utc::now() {
-                                            // Expired notifications
-                                            let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id, &notification.created_at, &kafka_producer, &kafka_topic).await;
-                                        } else {
-                                            // Notifications to be retried
-                                            RETRIED_NOTIFICATIONS.inc();
-                                            let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(notification)).await;
-                                        }
+                                if is_stream_id_less(&notification.id.0, clients_tx[&ClientId(client_id.to_owned())].1.0.as_str()) { // Older Sent Notifications to be sent again for retry
+                                    if notification.ttl < Utc::now() {
+                                        // Expired notifications
+                                        let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.0, notification.created_at, &kafka_producer, &kafka_topic).await;
                                     } else {
-                                        error!("Error in parsing notification TTL for retrying notification : {:?}", notification);
+                                        // Notifications to be retried
+                                        RETRIED_NOTIFICATIONS.inc();
+                                        let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
                                     }
                                 }
                             }
