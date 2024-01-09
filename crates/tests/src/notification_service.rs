@@ -80,10 +80,6 @@ async fn connect_client_without_ack() -> anyhow::Result<()> {
 
             let mut metadata = tonic::metadata::MetadataMap::new();
             metadata.insert(
-                "client-id",
-                tonic::metadata::MetadataValue::from_str("notification:client-1000")?,
-            );
-            metadata.insert(
                 "token",
                 tonic::metadata::MetadataValue::from_str("token-1000")?,
             );
@@ -137,10 +133,6 @@ async fn connect_client_with_ack() -> anyhow::Result<()> {
                 .await?;
 
             let mut metadata = tonic::metadata::MetadataMap::new();
-            metadata.insert(
-                "client-id",
-                tonic::metadata::MetadataValue::from_str("notification:client-1000")?,
-            );
             metadata.insert(
                 "token",
                 tonic::metadata::MetadataValue::from_str("token-1000")?,

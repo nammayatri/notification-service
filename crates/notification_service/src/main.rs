@@ -64,7 +64,7 @@ impl NotificationService {
     }
 }
 
-async fn _get_client_id_from_bpp_authentication(
+async fn get_client_id_from_bpp_authentication(
     redis_pool: &RedisConnectionPool,
     token: &str,
     auth_url: &Url,
@@ -99,25 +99,17 @@ impl Notification for NotificationService {
                 "token (token - Header) not found".to_string(),
             ))?;
 
-        let client_id = metadata
-            .get("client-id")
-            .and_then(|client_id| client_id.to_str().ok())
-            .map(|client_id| client_id.to_string())
-            .ok_or(AppError::InvalidRequest(
-                "client_id (client_id - Header) not found".to_string(),
-            ))?;
-
-        // let ClientId(client_id) = get_client_id_from_bpp_authentication(
-        //     &self.app_state.redis_pool,
-        //     &token,
-        //     &self.app_state.auth_url,
-        //     &self.app_state.auth_api_key,
-        //     &self.app_state.auth_token_expiry,
-        // )
-        // .await
-        // .map_err(|err| {
-        //     AppError::InternalError(format!("Internal Authentication Failed : {:?}", err))
-        // })?;
+        let ClientId(client_id) = get_client_id_from_bpp_authentication(
+            &self.app_state.redis_pool,
+            &token,
+            &self.app_state.auth_url,
+            &self.app_state.auth_api_key,
+            &self.app_state.auth_token_expiry,
+        )
+        .await
+        .map_err(|err| {
+            AppError::InternalError(format!("Internal Authentication Failed : {:?}", err))
+        })?;
 
         CONNECTED_CLIENTS.inc();
         info!("Connection Successful - ClientId : {client_id} - token : {token}");
