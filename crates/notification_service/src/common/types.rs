@@ -21,9 +21,9 @@ pub struct NotificationId(pub String);
 pub struct Timestamp(pub DateTime<Utc>);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
-pub struct LastReadStreamEntry(pub String);
+pub struct StreamEntry(pub String);
 
-impl Default for LastReadStreamEntry {
+impl Default for StreamEntry {
     fn default() -> Self {
         Self("0-0".to_string())
     }

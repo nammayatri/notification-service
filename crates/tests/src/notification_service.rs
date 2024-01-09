@@ -8,7 +8,9 @@
 
 #[tokio::test]
 async fn generate_and_add_notifications() -> anyhow::Result<()> {
+    use notification_service::common::utils::decode_stream;
     use notification_service::environment::{AppConfig, AppState};
+    use notification_service::redis::types::NotificationData;
 
     if let Ok(current_dir) = std::env::current_dir() {
         println!("Current working directory: {}", current_dir.display());
@@ -25,6 +27,7 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         ("entity.id", "181a66a5-749c-4c9f-aea5-a5418b981cf0"),
         ("entity.type", "SearchRequest"),
         ("entity.data", "{\"searchRequestValidTill\":\"2023-12-23T13:45:38.057846262Z\",\"searchRequestId\":\"181a66a5-749c-4c9f-aea5-a5418b981cf0\",\"startTime\":\"2022-08-15T13:43:30.713006Z\",\"baseFare\":100.99,\"distance\":6066,\"distanceToPickup\":316,\"fromLocation\":{\"area\":\"B-3, CA-1/99, Ganapathi Temple Rd, KHB Colony, 5th Block, Koramangala, Bengaluru, Karnataka 560095, India\",\"state\":null,\"createdAt\":\"2022-08-15T13:43:37.771311059Z\",\"country\":null,\"building\":null,\"door\":null,\"street\":null,\"lat\":12.9362698,\"city\":null,\"areaCode\":null,\"id\":\"ef9ff2e4-592b-4b00-bb07-e8d9c4965d84\",\"lon\":77.6177708,\"updatedAt\":\"2022-08-15T13:43:37.771311059Z\"},\"toLocation\":{\"area\":\"Level 8, Raheja towers, 23-24, Mahatma Gandhi Rd, Yellappa Chetty Layout, Sivanchetti Gardens, Bengaluru, Karnataka 560001, India\",\"state\":null,\"createdAt\":\"2022-08-15T13:43:37.771378308Z\",\"country\":null,\"building\":null,\"door\":null,\"street\":null,\"lat\":12.9730611,\"city\":null,\"areaCode\":null,\"id\":\"3780b236-715b-4822-b834-96bf0800c8d6\",\"lon\":77.61707299999999,\"updatedAt\":\"2022-08-15T13:43:37.771378308Z\"},\"durationToPickup\":139}"),
+        ("id", "01d8b2ab-f41d-42a8-8f07-b6c6e6f489f5"),
         ("category", "NEW_RIDE_AVAILABLE"),
         ("title", "New ride available for offering"),
         ("body", "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters"),
@@ -56,10 +59,7 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         )
         .await?;
 
-    println!(
-        "{:?}",
-        notification_service::common::utils::decode_notification_payload(res)?
-    );
+    println!("{:?}", decode_stream::<NotificationData>(res)?);
 
     Ok(())
 }
