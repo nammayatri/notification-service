@@ -4,22 +4,21 @@
 
 Driver Ride Request Popup is a critical part in our ride booking journey and FCM delays, latencies, downtime could affect our overall application performance and UX. Also, it doesn't give us clear metrics on whether the FCM was delivered to the client on time or were there any drops or delays.
 
-![](RackMultipart20240110-1-u34xb6_html_1b0b067399a7e101.png)
-**Various FCM request failures observed during the day**
+### Various FCM request failures observed during the day
+<img width="1485" alt="Screenshot 2024-01-11 at 3 28 29 AM" src="https://github.com/nammayatri/notification-service/assets/38260510/5930bd6d-41ba-461a-8057-6b395221ed63">
 
-![](RackMultipart20240110-1-u34xb6_html_57db0ed57314d5a4.png)
-
-**Higher FCM API latencies gets added to the overall time it takes for the message to get delivered to client**
+### Higher FCM API latencies gets added to the overall time it takes for the message to get delivered to client
+<img width="1491" alt="Screenshot 2024-01-11 at 3 28 50 AM" src="https://github.com/nammayatri/notification-service/assets/38260510/41df6477-c821-4f71-ad38-94113b71f2e8">
 
 So, we this Push Notification service aims to be more reliable and scalable by having better metrics.
 
 ## **Metrics**
 
-Notifications sent during the day : 68,78,663 ~ _ **69 Lakhs** _
+Notifications sent during the day : 68,78,663 ~**69 Lakhs**
 
 Notification payload size : **4 KB**
 
-Notifications sent per second : 6878663 / (24 \* 60 \* 60) ~ _ **80 TPS** _
+Notifications sent per second : 6878663 / (24 \* 60 \* 60) ~**80 TPS**
 
 Number of clients connected during the day : **56,974**
 
@@ -39,7 +38,7 @@ Average TP99 latency : **10 ms**
 
 ## **Comparison between different communication protocols**
 
-1. ### **MQTT**
+### MQTT
 
 It works on TCP/IP protocol, and is lightweight to work with IoT devices like smart bulbs, sensors etc. It works on the Pub/Sub model and the connection is not persistent. MQTT client will connect and disconnect to read/write messages like ping. MQTT provides Quality of Service (QoS)level, which is an agreement between the sender of a message and the receiver of a message that defines the guarantee of delivery for a specific message.
 
@@ -54,16 +53,16 @@ In MQTT, when a client subscribes to a topic, it typically receives only the mes
 
 AWS MQTT Broker Price ~ **16,757 Rs**
 
-1. ### **WebSocket**
+### WebSocket
 
 It is based on HTTP 1.1 protocol and came to support bi-directional communication which was not supported with plain HTTP 1.1 protocol. Websockets maintain persistent connection. Message delivery order will be maintained and there are many libraries and frameworks to support websocket and pub/sub over websockets.
 
-1. ### **GRPC**
+### GRPC
 
 This would look similar to websockets but underlying difference is it works on HTTP2 protocol and the data format for request response would be bound to Protobuf, cannot use JSON or XML. But protobuf is more compact and light weight than the latter. The connection would be persistent and the client can invoke the methods in the remote server through the connection as needed. It offers 4 types of method call, traditional request/response model, server-side streaming, client side streaming and bi-directional streaming.
 [_ **UBER** _](https://www.uber.com/en-IN/blog/ubers-next-gen-push-platform-on-grpc/) uses GRPC for sending reliable and high performance push notifications to its clients.
 
- ![](RackMultipart20240110-1-u34xb6_html_3bca1bd72e4c6157.png)
+<img width="1522" alt="Screenshot 2024-01-11 at 3 29 53 AM" src="https://github.com/nammayatri/notification-service/assets/38260510/821744c6-8c52-49fc-9bde-eea7f084bd53">
 
 ## **Load Testing**
 
@@ -146,7 +145,7 @@ The following are the summarized results of load test performed for MQTT/GRPC/We
 - **BAP/BPP** : Application that sends notifications at various stages.
 - **FCM** : Google's firebase messaging service that sends push notifications to both Android & IOS.
 
-![](RackMultipart20240110-1-u34xb6_html_680c5179b340e6d.png)
+<img width="1588" alt="Screenshot 2024-01-11 at 3 30 38 AM" src="https://github.com/nammayatri/notification-service/assets/38260510/b1fe40c5-e6a8-43b3-b774-f99c7263a6bb">
 
 **Stage (i) - Client connection to Notification Server**
 
@@ -179,7 +178,7 @@ One drawback of this architecture is that it doesn't account for notification fa
 - **BAP/BPP** : Application that sends notifications at various stages.
 - **FCM** : Google's firebase messaging service that sends push notifications to both Android & IOS.
 
-![](RackMultipart20240110-1-u34xb6_html_2bc0947ec3cf5dad.png)
+<img width="1300" alt="Screenshot 2024-01-11 at 3 31 11 AM" src="https://github.com/nammayatri/notification-service/assets/38260510/0984fdcf-1f4d-418b-9a56-2a8b206e79c8">
 
 **Stage (i) - Client connection to Notification Server**
 
