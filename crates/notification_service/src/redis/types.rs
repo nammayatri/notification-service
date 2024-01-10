@@ -17,7 +17,7 @@ pub struct NotificationData {
     pub category: String,
     pub title: String,
     pub body: String,
-    pub show: bool,
+    pub show: String,
     pub created_at: DateTime<Utc>,
     pub ttl: DateTime<Utc>,
     pub entity: EntityData,

@@ -4,7 +4,7 @@ let redis_cfg = {
     cluster_enabled = True,
     cluster_urls = [""],
     use_legacy_version = False,
-    pool_size = 10,
+    pool_size = 50,
     reconnect_max_attempts = 10,
     reconnect_delay = 5000,
     default_ttl = 3600,
@@ -32,8 +32,8 @@ let internal_auth_cfg = {
 }
 
 in {
-    port = 50051,
-    prometheus_port = 9090,
+    grpc_port = 50051,
+    http_server_port = 9090,
     internal_auth_cfg = internal_auth_cfg,
     logger_cfg = logger_cfg,
     redis_cfg = redis_cfg,

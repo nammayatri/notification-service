@@ -51,8 +51,8 @@ tokio-stream = "0.1"
 futures = "0.3.28"
 package = "0.0.0"
 
-macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "64160af" }
-shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "64160af" }
+macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "0ee82ea" }
+shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "0ee82ea" }
 
 [build-dependencies]
 tonic-build = "0.10.2"

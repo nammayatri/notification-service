@@ -9,18 +9,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+#[macros::impl_getter]
 pub struct Token(pub String);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, Hash, PartialEq)]
+#[macros::impl_getter]
 pub struct ClientId(pub String);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Hash)]
+#[macros::impl_getter]
 pub struct NotificationId(pub String);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[macros::impl_getter]
 pub struct Timestamp(pub DateTime<Utc>);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+#[macros::impl_getter]
 pub struct StreamEntry(pub String);
 
 impl Default for StreamEntry {

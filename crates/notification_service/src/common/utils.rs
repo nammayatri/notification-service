@@ -103,13 +103,12 @@ pub fn transform_notification_data_to_payload(
         data: notification.entity.data,
     };
     NotificationPayload {
-        id: notification.id.0,
+        id: notification.id.inner(),
         category: notification.category,
         title: notification.title,
         body: notification.body,
         show: notification.show,
         created_at: notification.created_at.to_string(),
-        ttl: notification.ttl.to_string(),
         entity: Some(entity),
     }
 }
