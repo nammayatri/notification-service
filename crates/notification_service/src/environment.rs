@@ -31,8 +31,8 @@ pub struct InternalAuthConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
-    pub port: u16,
-    pub prometheus_port: u16,
+    pub grpc_port: u16,
+    pub http_server_port: u16,
     pub internal_auth_cfg: InternalAuthConfig,
     pub logger_cfg: LoggerConfig,
     pub redis_cfg: RedisSettings,
@@ -54,8 +54,8 @@ pub struct AppState {
     pub last_known_notification_cache_expiry: u32,
     pub notification_kafka_topic: String,
     pub producer: Option<FutureProducer>,
-    pub port: u16,
-    pub prometheus_port: u16,
+    pub grpc_port: u16,
+    pub http_server_port: u16,
 }
 
 impl AppState {
@@ -100,8 +100,8 @@ impl AppState {
             retry_delay_seconds: app_config.retry_delay_seconds,
             notification_kafka_topic: app_config.notification_kafka_topic,
             producer,
-            port: app_config.port,
-            prometheus_port: app_config.prometheus_port,
+            grpc_port: app_config.grpc_port,
+            http_server_port: app_config.http_server_port,
         }
     }
 }

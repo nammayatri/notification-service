@@ -251,10 +251,10 @@ async fn main() -> Result<()> {
                 .to(|| Box::pin(async { HttpResponse::Ok().body("Notification Service Is Up!") })),
         )
     })
-    .bind((Ipv4Addr::UNSPECIFIED, app_state.prometheus_port))?
+    .bind((Ipv4Addr::UNSPECIFIED, app_state.http_server_port))?
     .run();
 
-    let addr = format!("[::1]:{}", app_state.port).parse()?;
+    let addr = format!("[::1]:{}", app_state.grpc_port).parse()?;
     let notification_service = NotificationService::new(read_notification_tx, app_state);
     let grpc_server = Server::builder()
         .add_service(NotificationServer::new(notification_service))
