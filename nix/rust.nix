@@ -27,6 +27,7 @@
           pkgs.pkg-config
           pkgs.cmake
           pkgs.protobuf
+          pkgs.grpcurl
         ];
         # needed to dynamically link rdkafka
         CARGO_FEATURE_DYNAMIC_LINKING = 1;

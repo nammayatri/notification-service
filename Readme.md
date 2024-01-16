@@ -273,3 +273,11 @@ debug-assertions = false
 debug = true
 debug-assertions = false
 ```
+
+## Debugging
+
+To connect to GRPC server use below curl command in `nix develop` shell :
+
+```
+grpcurl -plaintext -d '{"id": "1234567890-0","created_at":"2024-01-21T13:45:38.057846262Z"}' -import-path ./crates/notification_service/protos -proto notification_service.proto localhost:50051 notification_service.Notification/StreamPayload
+```

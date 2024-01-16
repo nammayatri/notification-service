@@ -24,6 +24,10 @@
               awscli
               coreutils
               bash
+              curl
+              grpcurl
+              apt
+              htop
               self'.packages.default
             ];
             name = "notification-service";
