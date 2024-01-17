@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package healthcheck;
+
+// Request message for health check
+message HealthCheckRequest {}
+
+// Response message for health check
+message HealthCheckResponse {
+  // The health status of the server
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+
+  // The health status of the server
+  ServingStatus status = 1;
+}
+
+service Health {
+  // Check the health of the server
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+}

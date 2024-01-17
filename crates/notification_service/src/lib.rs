@@ -7,6 +7,7 @@
 */
 
 tonic::include_proto!("notification_service");
+tonic::include_proto!("healthcheck");
 
 pub mod common;
 pub mod environment;

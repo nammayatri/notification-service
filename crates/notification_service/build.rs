@@ -10,6 +10,12 @@ fn main() {
     #[allow(clippy::expect_used)]
     tonic_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .compile(&["protos/notification_service.proto"], &["protos"])
-        .expect("Failed to compile `notification_service.proto` file");
+        .compile(
+            &[
+                "protos/notification_service.proto",
+                "protos/healthcheck.proto",
+            ],
+            &["protos"],
+        )
+        .expect("Failed to compile proto file");
 }

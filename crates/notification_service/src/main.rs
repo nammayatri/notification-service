@@ -13,6 +13,7 @@ use futures::Stream;
 use notification_service::{
     common::{types::*, utils::abs_diff_utc_as_sec},
     environment::{AppConfig, AppState},
+    health_server::{Health, HealthServer},
     kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
     notification_latency,
     notification_server::{Notification, NotificationServer},
@@ -26,7 +27,7 @@ use notification_service::{
         logger::setup_tracing,
         prometheus::{prometheus_metrics, CONNECTED_CLIENTS, NOTIFICATION_LATENCY},
     },
-    NotificationAck, NotificationPayload,
+    HealthCheckRequest, HealthCheckResponse, NotificationAck, NotificationPayload,
 };
 use reqwest::Url;
 use shared::redis::types::RedisConnectionPool;
@@ -196,6 +197,19 @@ impl Notification for NotificationService {
     }
 }
 
+pub struct Healthcheck;
+
+#[tonic::async_trait]
+impl Health for Healthcheck {
+    async fn check(
+        &self,
+        _request: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckResponse>, Status> {
+        let response = HealthCheckResponse { status: 12 };
+        Ok(Response::new(response))
+    }
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() -> Result<()> {
     let dhall_config_path = var("DHALL_CONFIG")
@@ -258,6 +272,7 @@ async fn main() -> Result<()> {
     let notification_service = NotificationService::new(read_notification_tx, app_state);
     let grpc_server = Server::builder()
         .add_service(NotificationServer::new(notification_service))
+        .add_service(HealthServer::new(Healthcheck))
         .serve(addr);
 
     let (http_result, grpc_result, _read_notification_result) =
