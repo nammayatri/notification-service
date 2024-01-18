@@ -150,7 +150,6 @@ async fn connect_client_with_ack() -> anyhow::Result<()> {
                 println!("{:?}", notification);
                 tx.send(notification_service::NotificationAck {
                     id: notification.id,
-                    created_at: notification.created_at,
                 })
                 .await?;
             }

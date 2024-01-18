@@ -19,7 +19,6 @@ pub async fn kafka_stream_notification_updates(
     retries: u32,
     status: NotificationStatus,
     created_at: Timestamp,
-    picked_at: Timestamp,
     delivered_at: Option<Timestamp>,
 ) {
     let message = Notification {
@@ -27,7 +26,6 @@ pub async fn kafka_stream_notification_updates(
         retries,
         status,
         created_at,
-        picked_at,
         delivered_at,
     };
     if let Err(err) = push_to_kafka(producer, topic, client_id, message).await {

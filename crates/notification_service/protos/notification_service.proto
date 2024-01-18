@@ -5,7 +5,6 @@ package notification_service;
 // Message for acknowledging notifications
 message NotificationAck {
   string id = 1;
-  string created_at = 2;
 }
 
 // Message for the entity associated with the notification
@@ -22,8 +21,7 @@ message NotificationPayload {
   string title = 3;
   string body = 4;
   string show = 5;
-  string created_at = 6; // UTC Datetime String
-  Entity entity = 7;
+  Entity entity = 6;
 }
 
 // Notification service with a single Bi-directional RPC method

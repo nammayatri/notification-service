@@ -10,10 +10,12 @@ use std::cmp::Ordering;
 
 use crate::{redis::types::NotificationData, tools::error::AppError, Entity, NotificationPayload};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+
+use super::types::Timestamp;
 
 pub fn decode_nested_json<T: DeserializeOwned>(payload: Vec<(String, String)>) -> Result<T> {
     let mut json_obj = json!({});
@@ -108,7 +110,17 @@ pub fn transform_notification_data_to_payload(
         title: notification.title,
         body: notification.body,
         show: notification.show,
-        created_at: notification.created_at.to_string(),
         entity: Some(entity),
     }
+}
+
+#[allow(deprecated)]
+pub fn get_timestamp_from_stream_id(stream_id: &str) -> Timestamp {
+    stream_id
+        .split('-')
+        .next()
+        .and_then(|timestamp_part| timestamp_part.parse::<i64>().ok())
+        .map(|milliseconds| Utc.timestamp(milliseconds / 1000, 0))
+        .map(Timestamp)
+        .unwrap_or_else(|| Timestamp(Utc::now()))
 }

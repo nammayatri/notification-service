@@ -49,7 +49,7 @@ pub async fn set_client_id(
     ClientId(client_id): &ClientId,
 ) -> Result<()> {
     redis_pool
-        .set_key_as_str(&set_client_id_key(token), client_id, *auth_token_expiry)
+        .set_key_as_str(&client_details_key(token), client_id, *auth_token_expiry)
         .await?;
     Ok(())
 }
@@ -59,45 +59,50 @@ pub async fn get_client_id(
     token: &str,
 ) -> Result<Option<ClientId>> {
     Ok(redis_pool
-        .get_key_as_str(&set_client_id_key(token))
+        .get_key_as_str(&client_details_key(token))
         .await?
         .map(ClientId))
 }
 
-pub async fn set_notification_start_time(
+pub async fn set_notification_stream_id(
     redis_pool: &RedisConnectionPool,
     notification_id: &str,
+    notification_stream_id: &str,
     notification_ttl: DateTime<Utc>,
 ) -> Result<()> {
     let now = Utc::now();
     redis_pool
-        .set_key(
-            &notification_duration_key(notification_id),
-            Timestamp(now),
-            abs_diff_utc_as_sec(now, notification_ttl) as u32,
+        .set_key_as_str(
+            &notification_stream_key(notification_id),
+            notification_stream_id,
+            2 * abs_diff_utc_as_sec(now, notification_ttl) as u32,
         )
         .await?;
     Ok(())
 }
 
-pub async fn get_notification_start_time(
+pub async fn get_notification_stream_id(
     redis_pool: &RedisConnectionPool,
     notification_id: &str,
-) -> Result<Option<Timestamp>> {
+) -> Result<Option<StreamEntry>> {
     Ok(redis_pool
-        .get_key::<Timestamp>(&notification_duration_key(notification_id))
-        .await?)
+        .get_key_as_str(&notification_stream_key(notification_id))
+        .await?
+        .map(StreamEntry))
 }
 
 pub async fn clean_up_notification(
     redis_pool: &RedisConnectionPool,
     client_id: &str,
     notification_id: &str,
+    notification_stream_id: &str,
 ) -> Result<()> {
     redis_pool
-        .delete_key(&notification_duration_key(notification_id))
+        .delete_key(&notification_stream_key(notification_id))
         .await?;
-    redis_pool.xdel(client_id, notification_id).await?;
+    redis_pool
+        .xdel(&notification_client_key(client_id), notification_stream_id)
+        .await?;
     Ok(())
 }
 
@@ -111,7 +116,7 @@ pub async fn set_clients_last_sent_notification(
     {
         redis_pool
             .set_key(
-                &set_last_sent_client_notification_key(&client_id),
+                &last_sent_client_notification_key(&client_id),
                 last_seen_notification_id,
                 expiry_time,
             )
@@ -125,6 +130,6 @@ pub async fn get_client_last_sent_notification(
     ClientId(client_id): &ClientId,
 ) -> Result<Option<StreamEntry>> {
     Ok(redis_pool
-        .get_key::<StreamEntry>(&set_last_sent_client_notification_key(client_id))
+        .get_key::<StreamEntry>(&last_sent_client_notification_key(client_id))
         .await?)
 }

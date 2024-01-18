@@ -8,10 +8,13 @@
 
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::Stream;
 use notification_service::{
-    common::{types::*, utils::abs_diff_utc_as_sec},
+    common::{
+        types::*,
+        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
+    },
     environment::{AppConfig, AppState},
     health_server::{Health, HealthServer},
     kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
@@ -20,7 +23,7 @@ use notification_service::{
     outbound::external::internal_authentication,
     reader::run_notification_reader,
     redis::commands::{
-        clean_up_notification, get_client_id, get_notification_start_time, set_client_id,
+        clean_up_notification, get_client_id, get_notification_stream_id, set_client_id,
     },
     tools::{
         error::AppError,
@@ -141,9 +144,12 @@ impl Notification for NotificationService {
             loop {
                 match stream.message().await {
                     Ok(Some(notification_ack)) => {
-                        match get_notification_start_time(&redis_pool, &notification_ack.id).await {
-                            Ok(Some(Timestamp(start_time))) => {
-                                notification_latency!(start_time);
+                        match get_notification_stream_id(&redis_pool, &notification_ack.id).await {
+                            Ok(Some(StreamEntry(notification_stream_id))) => {
+                                let Timestamp(notification_created_at) =
+                                    get_timestamp_from_stream_id(&notification_stream_id);
+
+                                notification_latency!(notification_created_at);
 
                                 let (
                                     producer_cloned,
@@ -156,33 +162,33 @@ impl Notification for NotificationService {
                                     client_id.clone(),
                                     notification_ack.id.clone(),
                                 );
-                                if let Ok(created_at) =
-                                    notification_ack.created_at.parse::<DateTime<Utc>>()
-                                {
-                                    tokio::spawn(async move {
-                                        let _ = kafka_stream_notification_updates(
-                                            &producer_cloned,
-                                            &topic_cloned,
-                                            &client_id_cloned,
-                                            notification_id_cloned,
-                                            0,
-                                            NotificationStatus::DELIVERED,
-                                            Timestamp(created_at),
-                                            Timestamp(start_time),
-                                            Some(Timestamp(Utc::now())),
-                                        )
-                                        .await;
-                                    });
-                                }
+                                tokio::spawn(async move {
+                                    let _ = kafka_stream_notification_updates(
+                                        &producer_cloned,
+                                        &topic_cloned,
+                                        &client_id_cloned,
+                                        notification_id_cloned,
+                                        0,
+                                        NotificationStatus::DELIVERED,
+                                        Timestamp(notification_created_at),
+                                        Some(Timestamp(Utc::now())),
+                                    )
+                                    .await;
+                                });
+
+                                let _ = clean_up_notification(
+                                    &redis_pool,
+                                    &client_id,
+                                    &notification_ack.id,
+                                    &notification_stream_id,
+                                )
+                                .await;
                             }
-                            Ok(None) => error!("Notification Start Time Not Found"),
+                            Ok(None) => error!("Notification Stream Id Not Found."),
                             Err(err) => {
-                                error!("Error in getting Notification Start Time : {:?}", err)
+                                error!("Error in getting Notification Stream Id : {:?}", err)
                             }
                         }
-                        let _ =
-                            clean_up_notification(&redis_pool, &client_id, &notification_ack.id)
-                                .await;
                     }
                     Ok(None) => {
                         error!("Client ({}) Disconnected", client_id);

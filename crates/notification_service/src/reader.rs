@@ -9,18 +9,20 @@
 use crate::{
     common::{
         types::*,
-        utils::{is_stream_id_less, transform_notification_data_to_payload},
+        utils::{
+            get_timestamp_from_stream_id, is_stream_id_less, transform_notification_data_to_payload,
+        },
     },
     kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
     redis::commands::{
-        clean_up_notification, get_client_last_sent_notification, get_notification_start_time,
-        read_client_notifications, set_clients_last_sent_notification, set_notification_start_time,
+        clean_up_notification, get_client_last_sent_notification, get_notification_stream_id,
+        read_client_notifications, set_clients_last_sent_notification, set_notification_stream_id,
     },
     tools::prometheus::{EXPIRED_NOTIFICATIONS, RETRIED_NOTIFICATIONS},
     NotificationPayload,
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rdkafka::producer::FutureProducer;
 use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
@@ -42,24 +44,25 @@ async fn clean_up_expired_notification(
     redis_pool: &RedisConnectionPool,
     client_id: &str,
     notification_id: &str,
-    notification_created_at: DateTime<Utc>,
     kafka_producer: &Option<FutureProducer>,
     kafka_topic: &str,
 ) {
     EXPIRED_NOTIFICATIONS.inc();
 
-    match get_notification_start_time(redis_pool, notification_id).await {
-        Ok(Some(start_time)) => {
+    match get_notification_stream_id(redis_pool, notification_id).await {
+        Ok(Some(StreamEntry(notification_stream_id))) => {
             let (
                 cloned_kafka_producer,
                 cloned_kafka_topic,
                 cloned_client_id,
                 cloned_notification_id,
+                notification_created_at,
             ) = (
                 kafka_producer.clone(),
                 kafka_topic.to_string(),
                 client_id.to_string(),
                 notification_id.to_string(),
+                get_timestamp_from_stream_id(&notification_stream_id),
             );
             tokio::spawn(async move {
                 let _ = kafka_stream_notification_updates(
@@ -69,20 +72,25 @@ async fn clean_up_expired_notification(
                     cloned_notification_id,
                     0,
                     NotificationStatus::EXPIRED,
-                    Timestamp(notification_created_at),
-                    start_time,
+                    notification_created_at,
                     None,
                 )
                 .await;
             });
+
+            let _ = clean_up_notification(
+                redis_pool,
+                client_id,
+                notification_id,
+                &notification_stream_id,
+            )
+            .await;
         }
-        Ok(None) => error!("Notification Start Time Not Found"),
+        Ok(None) => error!("Notification Stream Id Not Found."),
         Err(err) => {
-            error!("Error in getting Notification Start Time : {:?}", err)
+            error!("Error in getting Notification Stream Id : {:?}", err)
         }
     }
-
-    let _ = clean_up_notification(redis_pool, client_id, notification_id).await;
 }
 
 #[allow(clippy::type_complexity)]
@@ -149,13 +157,13 @@ pub async fn run_notification_reader(
                             for notification in notifications {
                                 if notification.ttl < Utc::now() {
                                     // Expired Notification
-                                    let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), notification.created_at, &kafka_producer, &kafka_topic).await;
+                                    let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic).await;
                                 } else {
                                     // Send Notifications
                                     if let Some((_, last_read_stream_id)) = clients_tx.get_mut(&ClientId(client_id.to_string())) {
                                         *last_read_stream_id = notification.stream_id.to_owned();
                                     }
-                                    let _ = set_notification_start_time(&redis_pool, &notification.id.inner(), notification.ttl).await;
+                                    let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await;
                                     let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
                                 }
                             }
@@ -172,7 +180,7 @@ pub async fn run_notification_reader(
                                 if is_stream_id_less(&notification.id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
                                     if notification.ttl < Utc::now() {
                                         // Expired notifications
-                                        let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), notification.created_at, &kafka_producer, &kafka_topic).await;
+                                        let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic).await;
                                     } else {
                                         // Notifications to be retried
                                         RETRIED_NOTIFICATIONS.inc();

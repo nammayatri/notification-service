@@ -10,14 +10,14 @@ pub fn notification_client_key(client_id: &str) -> String {
     format!("notification:client-{}", client_id)
 }
 
-pub fn set_client_id_key(token: &str) -> String {
-    format!("notification:client_id:{token}")
+pub fn client_details_key(token: &str) -> String {
+    format!("notification:client_details:{token}")
 }
 
-pub fn set_last_sent_client_notification_key(client_id: &str) -> String {
+pub fn last_sent_client_notification_key(client_id: &str) -> String {
     format!("notification:last_sent_client_notification:{client_id}")
 }
 
-pub fn notification_duration_key(notification_id: &str) -> String {
-    format!("notifition:duration:{}", notification_id)
+pub fn notification_stream_key(notification_id: &str) -> String {
+    format!("notifition:stream:{}", notification_id)
 }

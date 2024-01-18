@@ -20,6 +20,5 @@ pub struct Notification {
     pub retries: u32,
     pub status: NotificationStatus,
     pub created_at: Timestamp,
-    pub picked_at: Timestamp,
     pub delivered_at: Option<Timestamp>,
 }
