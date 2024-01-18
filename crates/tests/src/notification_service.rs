@@ -33,7 +33,7 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         ("body", "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters"),
         ("show", "SHOW"),
         ("created_at", "2024-01-01T13:45:38.057846262Z"),
-        ("ttl", "2024-01-06T13:45:38.057846262Z")
+        ("ttl", "2024-01-26T13:45:38.057846262Z")
     ];
 
     for i in 1000..=1000 {

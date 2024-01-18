@@ -32,7 +32,11 @@ pub async fn read_client_notifications(
         let notifications = redis_pool
             .xread(client_stream_keys.to_owned(), client_stream_ids.to_owned())
             .await?;
-        Ok(decode_stream::<NotificationData>(notifications)?)
+        let notifications = decode_stream::<NotificationData>(notifications)?;
+        Ok(notifications
+            .into_iter()
+            .map(|(key, val)| (key.replace(&notification_client_key(""), ""), val))
+            .collect())
     } else {
         Ok(FxHashMap::default())
     }
