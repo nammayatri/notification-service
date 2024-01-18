@@ -23,7 +23,9 @@ pub async fn read_client_notifications(
     let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
         clients_last_seen_notification_id
             .into_iter()
-            .map(|(ClientId(client_id), StreamEntry(last_entry))| (client_id, last_entry))
+            .map(|(ClientId(client_id), StreamEntry(last_entry))| {
+                (notification_client_key(&client_id), last_entry)
+            })
             .unzip();
 
     if !client_stream_keys.is_empty() {

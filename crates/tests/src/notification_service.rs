@@ -74,7 +74,7 @@ async fn connect_client_without_ack() -> anyhow::Result<()> {
 
             let mut client =
                 notification_service::notification_client::NotificationClient::connect(
-                    "http://[::1]:50051",
+                    "http://127.0.0.1:50051",
                 )
                 .await?;
 
@@ -128,7 +128,7 @@ async fn connect_client_with_ack() -> anyhow::Result<()> {
 
             let mut client =
                 notification_service::notification_client::NotificationClient::connect(
-                    "http://[::1]:50051",
+                    "http://127.0.0.1:50051",
                 )
                 .await?;
 
