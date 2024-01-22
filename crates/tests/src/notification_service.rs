@@ -36,11 +36,13 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         ("ttl", "2024-01-26T13:45:38.057846262Z")
     ];
 
-    for i in 1000..=1000 {
+    let size = 1;
+
+    for i in 1..=size {
         app_state
             .redis_pool
             .xadd(
-                format!("notification:client-{}", i).as_str(),
+                format!("notification:client-test-{}", i).as_str(),
                 data.to_vec(),
                 1000,
             )
@@ -50,12 +52,10 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
     let res = app_state
         .redis_pool
         .xread(
-            (1000..=1000)
-                .map(|i| format!("notification:client-{}", i))
+            (1..=size)
+                .map(|i| format!("notification:client-test-{}", i))
                 .collect(),
-            (1000..=1000)
-                .map(|_| "0".to_string())
-                .collect::<Vec<String>>(),
+            (1..=size).map(|_| "0".to_string()).collect::<Vec<String>>(),
         )
         .await?;
 
@@ -79,10 +79,7 @@ async fn connect_client_without_ack() -> anyhow::Result<()> {
                 .await?;
 
             let mut metadata = tonic::metadata::MetadataMap::new();
-            metadata.insert(
-                "token",
-                tonic::metadata::MetadataValue::from_str("token-1000")?,
-            );
+            metadata.insert("token", tonic::metadata::MetadataValue::from_str("test-1")?);
 
             let (_tx, rx) = tokio::sync::mpsc::channel(100000);
 
@@ -133,10 +130,7 @@ async fn connect_client_with_ack() -> anyhow::Result<()> {
                 .await?;
 
             let mut metadata = tonic::metadata::MetadataMap::new();
-            metadata.insert(
-                "token",
-                tonic::metadata::MetadataValue::from_str("token-1000")?,
-            );
+            metadata.insert("token", tonic::metadata::MetadataValue::from_str("test-1")?);
 
             let (tx, rx) = tokio::sync::mpsc::channel(100000);
 

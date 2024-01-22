@@ -16,7 +16,7 @@ let redis_cfg = {
 let LogLevel = < TRACE | DEBUG | INFO | WARN | ERROR | OFF >
 
 let logger_cfg = {
-    level = LogLevel.INFO,
+    level = LogLevel.DEBUG,
     log_to_file = False
 }
 

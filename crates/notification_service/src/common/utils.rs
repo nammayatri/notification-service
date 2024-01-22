@@ -71,7 +71,7 @@ where
     Ok(result)
 }
 
-pub fn is_stream_id_less(id1: &str, id2: &str) -> bool {
+pub fn is_stream_id_less_or_eq(id1: &str, id2: &str) -> bool {
     // Split the stream IDs into timestamp and sequence parts
     let parts1: Vec<&str> = id1.split('-').collect();
     let parts2: Vec<&str> = id2.split('-').collect();
@@ -85,7 +85,7 @@ pub fn is_stream_id_less(id1: &str, id2: &str) -> bool {
     ) {
         (Some(ts1), Some(seq1), Some(ts2), Some(seq2)) => match ts1.cmp(&ts2) {
             Ordering::Less => true,
-            Ordering::Equal => seq1 < seq2,
+            Ordering::Equal => seq1 <= seq2,
             Ordering::Greater => false,
         },
         _ => false, // Parsing failed, consider them not less

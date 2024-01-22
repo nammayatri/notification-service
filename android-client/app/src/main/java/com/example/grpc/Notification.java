@@ -10,7 +10,7 @@ public class Notification {
     private static NotificationGrpc.NotificationStub asyncStub;
 
     Notification() {
-        ManagedChannel channel = ManagedChannelBuilder.forAddress("a3d6a80d67fca4267b244647b5e05859-1229508546.ap-south-1.elb.amazonaws.com", 50051)
+        ManagedChannel channel = ManagedChannelBuilder.forAddress("grpc.beta.beckn.uat.juspay.net", 50051)
                 .usePlaintext()
                 .intercept(new NotificationHeaderInterceptor())
                 .keepAliveWithoutCalls(true)

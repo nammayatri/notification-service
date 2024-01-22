@@ -10,7 +10,8 @@ use crate::{
     common::{
         types::*,
         utils::{
-            get_timestamp_from_stream_id, is_stream_id_less, transform_notification_data_to_payload,
+            get_timestamp_from_stream_id, is_stream_id_less_or_eq,
+            transform_notification_data_to_payload,
         },
     },
     kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
@@ -169,15 +170,18 @@ pub async fn run_notification_reader(
                             }
                         }
                     },
-                    Err(err) => error!("Error in Reading Client Notifications during Retry : {:?}", err)
+                    Err(err) => error!("Error in Reading Client Notifications : {:?}", err)
                 }
             },
             _ = retry_timer.tick() => {
-                match read_client_notifications(&redis_pool, get_clients_last_seen_notification_id(&clients_tx)).await {
+                let clients_last_seen_notification_id = clients_tx.keys().map(|client_id| (client_id.clone(), StreamEntry::default())).collect();
+                match read_client_notifications(&redis_pool, clients_last_seen_notification_id).await {
                     Ok(notifications) => {
+                        debug!("Retry Notifications: {:?}", notifications);
                         for (client_id, notifications) in notifications {
                             for notification in notifications {
-                                if is_stream_id_less(&notification.id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
+                                debug!("Retry Stream: {:?} | {:?} | {:?}", notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner(), is_stream_id_less_or_eq(&notification.id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()));
+                                if is_stream_id_less_or_eq(&notification.id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
                                     if notification.ttl < Utc::now() {
                                         // Expired notifications
                                         let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic).await;

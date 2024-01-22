@@ -56,6 +56,7 @@
         shellHook = ''
           # For rust-analyzer 'hover' tooltips to work.
           export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library";
+          export DEV="true";
         '';
         nativeBuildInputs = with pkgs; [
           # Add your dev tools here.
