@@ -13,3 +13,4 @@ tonic = "0.10.2"
 
 shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "46e6876" }
 notification_service = { version = "0.1.0", path = "../notification_service" }
+uuid = "1.7.0"

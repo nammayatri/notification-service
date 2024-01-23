@@ -180,8 +180,8 @@ pub async fn run_notification_reader(
                         debug!("Retry Notifications: {:?}", notifications);
                         for (client_id, notifications) in notifications {
                             for notification in notifications {
-                                debug!("Retry Stream: {:?} | {:?} | {:?}", notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner(), is_stream_id_less_or_eq(&notification.id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()));
-                                if is_stream_id_less_or_eq(&notification.id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
+                                debug!("Retry Stream: {:?} | {:?} | {:?}", notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner(), is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()));
+                                if is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
                                     if notification.ttl < Utc::now() {
                                         // Expired notifications
                                         let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic).await;
