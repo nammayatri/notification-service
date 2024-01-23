@@ -10,7 +10,7 @@ use crate::{
     common::{
         types::*,
         utils::{
-            get_timestamp_from_stream_id, is_stream_id_less_or_eq,
+            get_timestamp_from_stream_id, hash_uuid, is_stream_id_less_or_eq,
             transform_notification_data_to_payload,
         },
     },
@@ -24,6 +24,7 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::Utc;
+use itertools::Itertools;
 use rdkafka::producer::FutureProducer;
 use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
@@ -47,6 +48,7 @@ async fn clean_up_expired_notification(
     notification_id: &str,
     kafka_producer: &Option<FutureProducer>,
     kafka_topic: &str,
+    shard: u64,
 ) {
     EXPIRED_NOTIFICATIONS.inc();
 
@@ -84,6 +86,7 @@ async fn clean_up_expired_notification(
                 client_id,
                 notification_id,
                 &notification_stream_id,
+                shard,
             )
             .await;
         }
@@ -116,6 +119,7 @@ pub async fn run_notification_reader(
     last_known_notification_cache_expiry: u32,
     kafka_producer: Option<FutureProducer>,
     kafka_topic: String,
+    max_shards: u64,
 ) {
     let mut clients_tx: FxHashMap<
         ClientId,
@@ -152,49 +156,67 @@ pub async fn run_notification_reader(
                 }
             },
             _ = reader_timer.tick() => {
-                match read_client_notifications(&redis_pool, get_clients_last_seen_notification_id(&clients_tx)).await {
-                    Ok(notifications) => {
-                        for (client_id, notifications) in notifications {
-                            for notification in notifications {
-                                if notification.ttl < Utc::now() {
-                                    // Expired Notification
-                                    let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic).await;
-                                } else {
-                                    // Send Notifications
-                                    if let Some((_, last_read_stream_id)) = clients_tx.get_mut(&ClientId(client_id.to_string())) {
-                                        *last_read_stream_id = notification.stream_id.to_owned();
-                                    }
-                                    let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await;
-                                    let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
-                                }
-                            }
-                        }
-                    },
-                    Err(err) => error!("Error in Reading Client Notifications : {:?}", err)
-                }
-            },
-            _ = retry_timer.tick() => {
-                let clients_last_seen_notification_id = clients_tx.keys().map(|client_id| (client_id.clone(), StreamEntry::default())).collect();
-                match read_client_notifications(&redis_pool, clients_last_seen_notification_id).await {
-                    Ok(notifications) => {
-                        debug!("Retry Notifications: {:?}", notifications);
-                        for (client_id, notifications) in notifications {
-                            for notification in notifications {
-                                debug!("Retry Stream: {:?} | {:?} | {:?}", notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner(), is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()));
-                                if is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
+                let mut clients_seen_notification_id = FxHashMap::default();
+                let clients_grouped_by_shard =
+                    clients_tx
+                        .keys()
+                        .group_by(|client_id| hash_uuid(&client_id.inner()).unwrap() % max_shards);
+                for (shard, clients) in &clients_grouped_by_shard {
+                    let clients_last_seen_notification_id = clients.map(|client_id| (client_id.clone(), clients_tx[client_id].1.clone())).collect();
+                    match read_client_notifications(&redis_pool, clients_last_seen_notification_id, shard).await {
+                        Ok(notifications) => {
+                            for (client_id, notifications) in notifications {
+                                for notification in notifications {
                                     if notification.ttl < Utc::now() {
-                                        // Expired notifications
-                                        let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic).await;
+                                        // Expired Notification
+                                        let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
                                     } else {
-                                        // Notifications to be retried
-                                        RETRIED_NOTIFICATIONS.inc();
+                                        // Send Notification
+                                        clients_seen_notification_id.insert(client_id.to_owned(), notification.stream_id.to_owned());
+                                        let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await;
                                         let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
                                     }
                                 }
                             }
-                        }
-                    },
-                    Err(err) => error!("Error in Reading Client Notifications during Retry : {:?}", err)
+                        },
+                        Err(err) => error!("Error in Reading Client Notifications : {:?}", err)
+                    }
+                }
+                for (client_id, notification_stream_id) in clients_seen_notification_id {
+                    if let Some((_, last_read_stream_id)) = clients_tx.get_mut(&ClientId(client_id.to_string())) {
+                        *last_read_stream_id = notification_stream_id;
+                    }
+                }
+            },
+            _ = retry_timer.tick() => {
+                let clients_grouped_by_shard =
+                    clients_tx
+                        .keys()
+                        .group_by(|client_id| hash_uuid(&client_id.inner()).unwrap() % max_shards);
+
+                for (shard, clients) in &clients_grouped_by_shard {
+                    let clients_last_seen_notification_id = clients.map(|client_id| (client_id.clone(), StreamEntry::default())).collect();
+                    match read_client_notifications(&redis_pool, clients_last_seen_notification_id, shard).await {
+                        Ok(notifications) => {
+                            debug!("Retry Notifications: {:?}", notifications);
+                            for (client_id, notifications) in notifications {
+                                for notification in notifications {
+                                    debug!("Retry Stream: {:?} | {:?} | {:?}", notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner(), is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()));
+                                    if is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
+                                        if notification.ttl < Utc::now() {
+                                            // Expired notifications
+                                            let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
+                                        } else {
+                                            // Notifications to be retried
+                                            RETRIED_NOTIFICATIONS.inc();
+                                            let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        Err(err) => error!("Error in Reading Client Notifications during Retry : {:?}", err)
+                    }
                 }
             },
         }

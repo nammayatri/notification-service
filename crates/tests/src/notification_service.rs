@@ -6,11 +6,15 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+#[allow(dead_code)]
+const CLIENT_ID: &str = "476c4daf-7480-4cf7-aa6a-27052a80a1df";
+
 #[tokio::test]
 async fn generate_and_add_notifications() -> anyhow::Result<()> {
     use notification_service::common::utils::decode_stream;
     use notification_service::environment::{AppConfig, AppState};
     use notification_service::redis::types::NotificationData;
+    use notification_service::{common::utils::hash_uuid, redis::keys::notification_client_key};
 
     if let Ok(current_dir) = std::env::current_dir() {
         println!("Current working directory: {}", current_dir.display());
@@ -36,26 +40,27 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         ("ttl", "2024-01-26T13:45:38.057846262Z")
     ];
 
-    let size = 1;
-
-    for i in 1..=size {
-        app_state
-            .redis_pool
-            .xadd(
-                format!("notification:client-test-{}", i).as_str(),
-                data.to_vec(),
-                1000,
-            )
-            .await?;
-    }
+    app_state
+        .redis_pool
+        .xadd(
+            &notification_client_key(
+                CLIENT_ID,
+                hash_uuid(CLIENT_ID).unwrap() % app_state.max_shards,
+            ),
+            data.to_vec(),
+            1000,
+        )
+        .await?;
 
     let res = app_state
         .redis_pool
         .xread(
-            (1..=size)
-                .map(|i| format!("notification:client-test-{}", i))
-                .collect(),
-            (1..=size).map(|_| "0".to_string()).collect::<Vec<String>>(),
+            [notification_client_key(
+                CLIENT_ID,
+                hash_uuid(CLIENT_ID).unwrap() % app_state.max_shards,
+            )]
+            .to_vec(),
+            ["0-0".to_string()].to_vec(),
         )
         .await?;
 
@@ -79,7 +84,10 @@ async fn connect_client_without_ack() -> anyhow::Result<()> {
                 .await?;
 
             let mut metadata = tonic::metadata::MetadataMap::new();
-            metadata.insert("token", tonic::metadata::MetadataValue::from_str("test-1")?);
+            metadata.insert(
+                "token",
+                tonic::metadata::MetadataValue::from_str(CLIENT_ID)?,
+            );
 
             let (_tx, rx) = tokio::sync::mpsc::channel(100000);
 
@@ -130,7 +138,10 @@ async fn connect_client_with_ack() -> anyhow::Result<()> {
                 .await?;
 
             let mut metadata = tonic::metadata::MetadataMap::new();
-            metadata.insert("token", tonic::metadata::MetadataValue::from_str("test-1")?);
+            metadata.insert(
+                "token",
+                tonic::metadata::MetadataValue::from_str(CLIENT_ID)?,
+            );
 
             let (tx, rx) = tokio::sync::mpsc::channel(100000);
 

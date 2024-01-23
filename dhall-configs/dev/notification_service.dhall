@@ -42,4 +42,5 @@ in {
     notification_kafka_topic = "notification-stats",
     reader_delay_seconds = 1,
     retry_delay_seconds = 5,
+    max_shards = +15,
 }

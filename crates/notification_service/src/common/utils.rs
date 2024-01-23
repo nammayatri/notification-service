@@ -6,7 +6,7 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, str::FromStr};
 
 use crate::{redis::types::NotificationData, tools::error::AppError, Entity, NotificationPayload};
 use anyhow::Result;
@@ -14,6 +14,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use uuid::Uuid;
 
 use super::types::Timestamp;
 
@@ -123,4 +124,10 @@ pub fn get_timestamp_from_stream_id(stream_id: &str) -> Timestamp {
         .map(|milliseconds| Utc.timestamp(milliseconds / 1000, 0))
         .map(Timestamp)
         .unwrap_or_else(|| Timestamp(Utc::now()))
+}
+
+pub fn hash_uuid(uuid_str: &str) -> Result<u64> {
+    let uuid = Uuid::from_str(uuid_str)?;
+    let (word1, word2) = uuid.as_u64_pair();
+    Ok(word1 + word2)
 }

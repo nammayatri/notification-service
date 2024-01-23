@@ -41,6 +41,7 @@ pub struct AppConfig {
     pub notification_kafka_topic: String,
     pub reader_delay_seconds: u64,
     pub retry_delay_seconds: u64,
+    pub max_shards: u64,
 }
 
 #[derive(Clone)]
@@ -56,6 +57,7 @@ pub struct AppState {
     pub producer: Option<FutureProducer>,
     pub grpc_port: u16,
     pub http_server_port: u16,
+    pub max_shards: u64,
 }
 
 impl AppState {
@@ -102,6 +104,7 @@ impl AppState {
             producer,
             grpc_port: app_config.grpc_port,
             http_server_port: app_config.http_server_port,
+            max_shards: app_config.max_shards,
         }
     }
 }

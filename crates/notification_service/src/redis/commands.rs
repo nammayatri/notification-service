@@ -13,18 +13,20 @@ use crate::common::{
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
 
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
     clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
+    shard: u64,
 ) -> Result<FxHashMap<String, Vec<NotificationData>>> {
     let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
         clients_last_seen_notification_id
             .into_iter()
             .map(|(ClientId(client_id), StreamEntry(last_entry))| {
-                (notification_client_key(&client_id), last_entry)
+                (notification_client_key(&client_id, shard), last_entry)
             })
             .unzip();
 
@@ -35,7 +37,21 @@ pub async fn read_client_notifications(
         let notifications = decode_stream::<NotificationData>(notifications)?;
         Ok(notifications
             .into_iter()
-            .map(|(key, val)| (key.replace(&notification_client_key(""), ""), val))
+            .map(|(key, val)| {
+                let client_id = if let Some(captures) = Regex::new(r"client-([0-9a-fA-F-]+):")
+                    .unwrap()
+                    .captures(&key)
+                {
+                    if let Some(client_id) = captures.get(1) {
+                        client_id.as_str().to_string()
+                    } else {
+                        key
+                    }
+                } else {
+                    key
+                };
+                (client_id, val)
+            })
             .collect())
     } else {
         Ok(FxHashMap::default())
@@ -96,12 +112,16 @@ pub async fn clean_up_notification(
     client_id: &str,
     notification_id: &str,
     notification_stream_id: &str,
+    shard: u64,
 ) -> Result<()> {
     redis_pool
         .delete_key(&notification_stream_key(notification_id))
         .await?;
     redis_pool
-        .xdel(&notification_client_key(client_id), notification_stream_id)
+        .xdel(
+            &notification_client_key(client_id, shard),
+            notification_stream_id,
+        )
         .await?;
     Ok(())
 }

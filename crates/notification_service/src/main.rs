@@ -13,7 +13,7 @@ use futures::Stream;
 use notification_service::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
+        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
     },
     environment::{AppConfig, AppState},
     health_server::{Health, HealthServer},
@@ -136,10 +136,11 @@ impl Notification for NotificationService {
             )))?
         }
 
-        let (redis_pool, producer, topic) = (
+        let (redis_pool, producer, topic, max_shards) = (
             self.app_state.redis_pool.clone(),
             self.app_state.producer.clone(),
             self.app_state.notification_kafka_topic.clone(),
+            self.app_state.max_shards,
         );
         tokio::spawn(async move {
             let mut stream = request.into_inner();
@@ -185,6 +186,7 @@ impl Notification for NotificationService {
                                     &client_id,
                                     &notification_ack.id,
                                     &notification_stream_id,
+                                    hash_uuid(&client_id).unwrap() % max_shards,
                                 )
                                 .await;
                             }
@@ -265,6 +267,7 @@ async fn main() -> Result<()> {
         app_state.last_known_notification_cache_expiry,
         app_state.producer.clone(),
         app_state.notification_kafka_topic.clone(),
+        app_state.max_shards,
     );
 
     let prometheus = prometheus_metrics();
