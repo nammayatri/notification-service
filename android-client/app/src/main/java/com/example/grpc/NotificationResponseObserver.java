@@ -17,7 +17,7 @@ public class NotificationResponseObserver implements StreamObserver<Notification
     @Override
     public void onNext(NotificationPayload value) {
         Log.i("GRPC", "[Message] : " + value.toString());
-//        this.notificationRequestObserver.onNext(NotificationAck.newBuilder().setId(value.getId()).build());
+        this.notificationRequestObserver.onNext(NotificationAck.newBuilder().setId(value.getId()).build());
     }
 
     @Override

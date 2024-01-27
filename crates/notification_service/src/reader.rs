@@ -109,9 +109,12 @@ fn get_clients_last_seen_notification_id(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn run_notification_reader(
-    mut read_notification_rx: Receiver<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
+    mut read_notification_rx: Receiver<(
+        ClientId,
+        Option<Sender<Result<NotificationPayload, Status>>>,
+    )>,
     graceful_termination_requested: Arc<AtomicBool>,
     redis_pool: Arc<RedisConnectionPool>,
     reader_delay_seconds: u64,
@@ -143,11 +146,19 @@ pub async fn run_notification_reader(
         }
         tokio::select! {
             item = read_notification_rx.recv() => {
-                error!("[Client Connected] : {:?}", item);
                 match item {
                     Some((client_id, client_tx)) => {
-                        let last_read_notification_id = get_client_last_sent_notification(&redis_pool, &client_id).await;
-                        clients_tx.insert(client_id, (client_tx, last_read_notification_id.map_or(StreamEntry::default(), |notification_id| notification_id.unwrap_or_default())));
+                        match client_tx {
+                            Some(client_tx) => {
+                                info!("[Client Connected] : {:?}", client_id);
+                                let last_read_notification_id = get_client_last_sent_notification(&redis_pool, &client_id).await;
+                                clients_tx.insert(client_id, (client_tx, last_read_notification_id.map_or(StreamEntry::default(), |notification_id| notification_id.unwrap_or_default())));
+                            },
+                            None => {
+                                error!("[Client Disconnected] : {:?}", client_id);
+                                clients_tx.remove(&client_id);
+                            }
+                        }
                     },
                     None => {
                         error!("[Client Failed to Connect]");
@@ -174,7 +185,11 @@ pub async fn run_notification_reader(
                                         // Send Notification
                                         clients_seen_notification_id.insert(client_id.to_owned(), notification.stream_id.to_owned());
                                         let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await;
-                                        let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                        if let Some((client_tx, _)) = clients_tx.get(&ClientId(client_id.to_owned())) {
+                                            let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                        } else {
+                                            warn!("Client ({:?}) entry does not exist, client got disconnected intermittently.", client_id);
+                                        }
                                     }
                                 }
                             }
@@ -201,16 +216,19 @@ pub async fn run_notification_reader(
                             debug!("Retry Notifications: {:?}", notifications);
                             for (client_id, notifications) in notifications {
                                 for notification in notifications {
-                                    debug!("Retry Stream: {:?} | {:?} | {:?}", notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner(), is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()));
-                                    if is_stream_id_less_or_eq(&notification.stream_id.inner(), clients_tx[&ClientId(client_id.to_owned())].1.inner().as_str()) { // Older Sent Notifications to be sent again for retry
-                                        if notification.ttl < Utc::now() {
-                                            // Expired notifications
-                                            let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
-                                        } else {
-                                            // Notifications to be retried
-                                            RETRIED_NOTIFICATIONS.inc();
-                                            let _ = clients_tx[&ClientId(client_id.to_owned())].0.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                    if let Some((client_tx, client_last_seen_stream_id)) = clients_tx.get(&ClientId(client_id.to_owned())) {
+                                        if is_stream_id_less_or_eq(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str()) { // Older Sent Notifications to be sent again for retry
+                                            if notification.ttl < Utc::now() {
+                                                // Expired notifications
+                                                let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
+                                            } else {
+                                                // Notifications to be retried
+                                                RETRIED_NOTIFICATIONS.inc();
+                                                let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                            }
                                         }
+                                    } else {
+                                        warn!("Client ({:?}) entry does not exist, client got disconnected intermittently.", client_id);
                                     }
                                 }
                             }

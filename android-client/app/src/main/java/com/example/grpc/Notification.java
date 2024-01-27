@@ -11,10 +11,9 @@ public class Notification {
 
     Notification() {
         ManagedChannel channel = ManagedChannelBuilder.forAddress("grpc.beta.beckn.uat.juspay.net", 50051)
-                .usePlaintext()
                 .intercept(new NotificationHeaderInterceptor())
                 .keepAliveWithoutCalls(true)
-                .keepAliveTime(30, TimeUnit.SECONDS)
+                .keepAliveTime(15, TimeUnit.SECONDS)
                 .build();
         asyncStub = NotificationGrpc.newStub(channel);
     }

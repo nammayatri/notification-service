@@ -51,14 +51,22 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{metadata::MetadataMap, transport::Server, Request, Response, Status};
 use tracing::*;
 
+#[allow(clippy::type_complexity)]
 pub struct NotificationService {
-    read_notification_tx: Sender<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
+    read_notification_tx: Sender<(
+        ClientId,
+        Option<Sender<Result<NotificationPayload, Status>>>,
+    )>,
     app_state: AppState,
 }
 
 impl NotificationService {
+    #[allow(clippy::type_complexity)]
     pub fn new(
-        read_notification_tx: Sender<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
+        read_notification_tx: Sender<(
+            ClientId,
+            Option<Sender<Result<NotificationPayload, Status>>>,
+        )>,
         app_state: AppState,
     ) -> Self {
         NotificationService {
@@ -127,7 +135,7 @@ impl Notification for NotificationService {
         if let Err(err) = self
             .read_notification_tx
             .clone()
-            .send((ClientId(client_id.to_owned()), client_tx))
+            .send((ClientId(client_id.to_owned()), Some(client_tx)))
             .await
         {
             Err(AppError::InternalError(format!(
@@ -136,8 +144,9 @@ impl Notification for NotificationService {
             )))?
         }
 
-        let (redis_pool, producer, topic, max_shards) = (
+        let (redis_pool, read_notification_tx, producer, topic, max_shards) = (
             self.app_state.redis_pool.clone(),
+            self.read_notification_tx.clone(),
             self.app_state.producer.clone(),
             self.app_state.notification_kafka_topic.clone(),
             self.app_state.max_shards,
@@ -198,6 +207,16 @@ impl Notification for NotificationService {
                     }
                     Ok(None) => {
                         error!("Client ({}) Disconnected", client_id);
+                        if let Err(err) = read_notification_tx
+                            .clone()
+                            .send((ClientId(client_id.to_owned()), None))
+                            .await
+                        {
+                            error!(
+                                "Failed to remove client's ({:?}) instance from Reader : {:?}",
+                                client_id, err
+                            );
+                        }
                         break;
                     }
                     _ => continue,
@@ -238,8 +257,14 @@ async fn main() -> Result<()> {
 
     #[allow(clippy::type_complexity)]
     let (read_notification_tx, read_notification_rx): (
-        Sender<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
-        Receiver<(ClientId, Sender<Result<NotificationPayload, Status>>)>,
+        Sender<(
+            ClientId,
+            Option<Sender<Result<NotificationPayload, Status>>>,
+        )>,
+        Receiver<(
+            ClientId,
+            Option<Sender<Result<NotificationPayload, Status>>>,
+        )>,
     ) = mpsc::channel(10000);
 
     let graceful_termination_requested = Arc::new(AtomicBool::new(false));
