@@ -89,7 +89,7 @@ pub fn is_stream_id_less_or_eq(id1: &str, id2: &str) -> bool {
             Ordering::Equal => seq1 <= seq2,
             Ordering::Greater => false,
         },
-        _ => false, // Parsing failed, consider them not less
+        _ => false,
     }
 }
 

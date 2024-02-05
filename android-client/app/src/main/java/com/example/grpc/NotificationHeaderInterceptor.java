@@ -20,7 +20,7 @@ public class NotificationHeaderInterceptor implements ClientInterceptor {
 
             @Override
             public void start(Listener<RespT> responseListener, Metadata headers) {
-                headers.put(Metadata.Key.of("token", ASCII_STRING_MARSHALLER), "88ef1a95-9f5c-457e-a1ad-43f361088d33");
+                headers.put(Metadata.Key.of("token", ASCII_STRING_MARSHALLER), "a5bf9c66-5f80-41a3-a950-0be769d59eb6");
                 super.start(responseListener, headers);
             }
         };

@@ -109,6 +109,30 @@ fn get_clients_last_seen_notification_id(
         .collect()
 }
 
+pub fn can_retry(id1: &str, id2: &str, retry_delay_seconds: u64) -> bool {
+    // Split the stream IDs into timestamp and sequence parts
+    let parts1: Vec<&str> = id1.split('-').collect();
+    let parts2: Vec<&str> = id2.split('-').collect();
+
+    // Parse timestamp and sequence as integers
+    match (
+        parts1.first().and_then(|&s| s.parse::<u64>().ok()),
+        parts1.get(1).and_then(|&s| s.parse::<u64>().ok()),
+        parts2.first().and_then(|&s| s.parse::<u64>().ok()),
+        parts2.get(1).and_then(|&s| s.parse::<u64>().ok()),
+    ) {
+        (Some(ts1), Some(seq1), Some(ts2), Some(seq2)) => {
+            let retry_delay_millis = retry_delay_seconds * 1000;
+            match (ts1 + retry_delay_millis).cmp(&ts2) {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Equal => seq1 <= seq2,
+                std::cmp::Ordering::Greater => false,
+            }
+        }
+        _ => true,
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn run_notification_reader(
     mut read_notification_rx: Receiver<(
@@ -129,7 +153,6 @@ pub async fn run_notification_reader(
         (Sender<Result<NotificationPayload, Status>>, StreamEntry),
     > = FxHashMap::default();
     let mut reader_timer = interval(Duration::from_secs(reader_delay_seconds));
-    let mut retry_timer = interval(Duration::from_secs(retry_delay_seconds));
 
     loop {
         if graceful_termination_requested.load(Ordering::Relaxed) {
@@ -179,17 +202,23 @@ pub async fn run_notification_reader(
                             for (client_id, notifications) in notifications {
                                 for notification in notifications {
                                     if notification.ttl < Utc::now() {
-                                        // Expired Notification
+                                        // Expired notifications
                                         let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
-                                    } else {
-                                        // Send Notification
-                                        clients_seen_notification_id.insert(client_id.to_owned(), notification.stream_id.to_owned());
-                                        let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await;
-                                        if let Some((client_tx, _)) = clients_tx.get(&ClientId(client_id.to_owned())) {
-                                            let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                    } else if let Some((client_tx, client_last_seen_stream_id)) = clients_tx.get(&ClientId(client_id.to_owned())) {
+                                        if is_stream_id_less_or_eq(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str()) { // Older Sent Notifications to be sent again for retry
+                                            if can_retry(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str(), retry_delay_seconds * 1000) {
+                                                // Notifications to be retried
+                                                RETRIED_NOTIFICATIONS.inc();
+                                                let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                            }
                                         } else {
-                                            warn!("Client ({:?}) entry does not exist, client got disconnected intermittently.", client_id);
+                                            // Send Notification First Time
+                                            clients_seen_notification_id.insert(client_id.to_owned(), notification.stream_id.to_owned());
+                                            let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await;
+                                            let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
                                         }
+                                    } else {
+                                        warn!("Client ({:?}) entry does not exist, client got disconnected intermittently.", client_id);
                                     }
                                 }
                             }
@@ -202,41 +231,7 @@ pub async fn run_notification_reader(
                         *last_read_stream_id = notification_stream_id;
                     }
                 }
-            },
-            _ = retry_timer.tick() => {
-                let clients_grouped_by_shard =
-                    clients_tx
-                        .keys()
-                        .group_by(|client_id| hash_uuid(&client_id.inner()).unwrap() % max_shards);
-
-                for (shard, clients) in &clients_grouped_by_shard {
-                    let clients_last_seen_notification_id = clients.map(|client_id| (client_id.clone(), StreamEntry::default())).collect();
-                    match read_client_notifications(&redis_pool, clients_last_seen_notification_id, shard).await {
-                        Ok(notifications) => {
-                            debug!("Retry Notifications: {:?}", notifications);
-                            for (client_id, notifications) in notifications {
-                                for notification in notifications {
-                                    if let Some((client_tx, client_last_seen_stream_id)) = clients_tx.get(&ClientId(client_id.to_owned())) {
-                                        if is_stream_id_less_or_eq(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str()) { // Older Sent Notifications to be sent again for retry
-                                            if notification.ttl < Utc::now() {
-                                                // Expired notifications
-                                                let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
-                                            } else {
-                                                // Notifications to be retried
-                                                RETRIED_NOTIFICATIONS.inc();
-                                                let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
-                                            }
-                                        }
-                                    } else {
-                                        warn!("Client ({:?}) entry does not exist, client got disconnected intermittently.", client_id);
-                                    }
-                                }
-                            }
-                        },
-                        Err(err) => error!("Error in Reading Client Notifications during Retry : {:?}", err)
-                    }
-                }
-            },
+            }
         }
     }
 }
