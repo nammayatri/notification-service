@@ -195,7 +195,7 @@ impl Notification for NotificationService {
                                     &client_id,
                                     &notification_ack.id,
                                     &notification_stream_id,
-                                    hash_uuid(&client_id).unwrap() % max_shards,
+                                    hash_uuid(&client_id) % max_shards,
                                 )
                                 .await;
                             }

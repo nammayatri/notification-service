@@ -194,7 +194,7 @@ pub async fn run_notification_reader(
                 let clients_grouped_by_shard =
                     clients_tx
                         .keys()
-                        .group_by(|client_id| hash_uuid(&client_id.inner()).unwrap() % max_shards);
+                        .group_by(|client_id| hash_uuid(&client_id.inner()) % max_shards);
                 for (shard, clients) in &clients_grouped_by_shard {
                     let clients_last_seen_notification_id = clients.map(|client_id| (client_id.clone(), clients_tx[client_id].1.clone())).collect();
                     match read_client_notifications(&redis_pool, clients_last_seen_notification_id, shard).await {
@@ -205,8 +205,11 @@ pub async fn run_notification_reader(
                                         // Expired notifications
                                         let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
                                     } else if let Some((client_tx, client_last_seen_stream_id)) = clients_tx.get(&ClientId(client_id.to_owned())) {
-                                        if is_stream_id_less_or_eq(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str()) { // Older Sent Notifications to be sent again for retry
-                                            if can_retry(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str(), retry_delay_seconds * 1000) {
+                                        // Older Sent Notifications to be sent again for retry
+                                        if is_stream_id_less_or_eq(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str()) {
+                                            // Notifications whose acknowledgedement has been delayed since a duration `retry_delay_seconds`
+                                            // from when it had to be sent `notification_stream_id` only has to be retried
+                                            if can_retry(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str(), retry_delay_seconds) {
                                                 // Notifications to be retried
                                                 RETRIED_NOTIFICATIONS.inc();
                                                 let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;

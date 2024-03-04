@@ -30,32 +30,32 @@ pub async fn read_client_notifications(
             })
             .unzip();
 
-    if !client_stream_keys.is_empty() {
-        let notifications = redis_pool
-            .xread(client_stream_keys.to_owned(), client_stream_ids.to_owned())
-            .await?;
-        let notifications = decode_stream::<NotificationData>(notifications)?;
-        Ok(notifications
-            .into_iter()
-            .map(|(key, val)| {
-                let client_id = if let Some(captures) = Regex::new(r"client-([0-9a-fA-F-]+):")
-                    .unwrap()
-                    .captures(&key)
-                {
-                    if let Some(client_id) = captures.get(1) {
-                        client_id.as_str().to_string()
-                    } else {
-                        key
-                    }
-                } else {
-                    key
-                };
-                (client_id, val)
-            })
-            .collect())
-    } else {
-        Ok(FxHashMap::default())
+    if client_stream_keys.is_empty() {
+        return Ok(FxHashMap::default());
     }
+
+    let notifications = redis_pool
+        .xread(client_stream_keys.to_owned(), client_stream_ids.to_owned())
+        .await?;
+    let notifications = decode_stream::<NotificationData>(notifications)?;
+
+    let mut result = FxHashMap::default();
+    for (key, val) in notifications {
+        match Regex::new(r"client-([0-9a-fA-F-]+):") {
+            Ok(regex) => {
+                match regex
+                    .captures(&key)
+                    .and_then(|captures| captures.get(1).map(|m| m.as_str()))
+                {
+                    Some(client_id) => result.insert(client_id.to_string(), val),
+                    None => continue,
+                }
+            }
+            Err(_) => continue,
+        };
+    }
+
+    Ok(result)
 }
 
 pub async fn set_client_id(

@@ -43,10 +43,7 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
     app_state
         .redis_pool
         .xadd(
-            &notification_client_key(
-                CLIENT_ID,
-                hash_uuid(CLIENT_ID).unwrap() % app_state.max_shards,
-            ),
+            &notification_client_key(CLIENT_ID, hash_uuid(CLIENT_ID) % app_state.max_shards),
             data.to_vec(),
             1000,
         )
@@ -57,7 +54,7 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         .xread(
             [notification_client_key(
                 CLIENT_ID,
-                hash_uuid(CLIENT_ID).unwrap() % app_state.max_shards,
+                hash_uuid(CLIENT_ID) % app_state.max_shards,
             )]
             .to_vec(),
             ["0-0".to_string()].to_vec(),
