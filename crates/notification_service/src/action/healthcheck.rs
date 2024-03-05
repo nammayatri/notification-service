@@ -6,14 +6,19 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-tonic::include_proto!("notification_service");
-tonic::include_proto!("healthcheck");
+use crate::{health_server::Health, HealthCheckRequest, HealthCheckResponse};
+use anyhow::Result;
+use tonic::{Request, Response, Status};
 
-pub mod action;
-pub mod common;
-pub mod environment;
-pub mod kafka;
-pub mod outbound;
-pub mod reader;
-pub mod redis;
-pub mod tools;
+pub struct Healthcheck;
+
+#[tonic::async_trait]
+impl Health for Healthcheck {
+    async fn check(
+        &self,
+        _request: Request<HealthCheckRequest>,
+    ) -> Result<Response<HealthCheckResponse>, Status> {
+        let response = HealthCheckResponse { status: 12 };
+        Ok(Response::new(response))
+    }
+}

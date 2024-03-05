@@ -29,6 +29,6 @@ pub async fn kafka_stream_notification_updates(
         delivered_at,
     };
     if let Err(err) = push_to_kafka(producer, topic, client_id, message).await {
-        error!("Error occured in push_to_kafka => {:?}", err)
+        error!("Error while Pushing to Kafa : {:?}", err)
     }
 }

@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
+use tracing::*;
 
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
@@ -48,10 +49,16 @@ pub async fn read_client_notifications(
                     .and_then(|captures| captures.get(1).map(|m| m.as_str()))
                 {
                     Some(client_id) => result.insert(client_id.to_string(), val),
-                    None => continue,
+                    None => {
+                        error!("Regex Match Failed For Key : {}", key);
+                        continue;
+                    }
                 }
             }
-            Err(_) => continue,
+            Err(err) => {
+                error!("Regex Parsing Failed For Key : {}, Error : {}", key, err);
+                continue;
+            }
         };
     }
 

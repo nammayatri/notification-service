@@ -232,6 +232,8 @@ pub async fn run_notification_reader(
                 for (client_id, notification_stream_id) in clients_seen_notification_id {
                     if let Some((_, last_read_stream_id)) = clients_tx.get_mut(&ClientId(client_id.to_string())) {
                         *last_read_stream_id = notification_stream_id;
+                    } else {
+                        error!("Client {} Not Found in HashMap", client_id)
                     }
                 }
             }
