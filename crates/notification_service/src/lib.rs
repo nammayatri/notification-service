@@ -12,7 +12,6 @@ tonic::include_proto!("healthcheck");
 pub mod action;
 pub mod common;
 pub mod environment;
-pub mod kafka;
 pub mod outbound;
 pub mod reader;
 pub mod redis;

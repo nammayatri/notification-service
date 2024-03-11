@@ -20,7 +20,7 @@ use notification_service::{
 };
 use std::{
     env::var,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -82,9 +82,8 @@ async fn main() -> Result<()> {
         app_state.reader_delay_seconds,
         app_state.retry_delay_seconds,
         app_state.last_known_notification_cache_expiry,
-        app_state.producer.clone(),
-        app_state.notification_kafka_topic.clone(),
         app_state.max_shards,
+        app_state.reader_batch,
     );
 
     let prometheus = prometheus_metrics();
@@ -98,12 +97,15 @@ async fn main() -> Result<()> {
     .bind((Ipv4Addr::UNSPECIFIED, app_state.http_server_port))?
     .run();
 
-    let addr = format!("0.0.0.0:{}", app_state.grpc_port).parse()?;
+    let grpc_port = app_state.grpc_port;
     let notification_service = NotificationService::new(read_notification_tx, app_state);
     let grpc_server = Server::builder()
         .add_service(NotificationServer::new(notification_service))
         .add_service(HealthServer::new(Healthcheck))
-        .serve(addr);
+        .serve(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            grpc_port,
+        )));
 
     let (http_result, grpc_result, _read_notification_result) =
         tokio::join!(http_server, grpc_server, read_notification_thread);

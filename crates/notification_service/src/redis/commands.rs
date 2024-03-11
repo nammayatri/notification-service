@@ -22,6 +22,7 @@ pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
     clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
     shard: u64,
+    batch: u64,
 ) -> Result<FxHashMap<String, Vec<NotificationData>>> {
     let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
         clients_last_seen_notification_id
@@ -36,7 +37,11 @@ pub async fn read_client_notifications(
     }
 
     let notifications = redis_pool
-        .xread(client_stream_keys.to_owned(), client_stream_ids.to_owned())
+        .xread(
+            client_stream_keys.to_owned(),
+            client_stream_ids.to_owned(),
+            Some(batch),
+        )
         .await?;
     let notifications = decode_stream::<NotificationData>(notifications)?;
 

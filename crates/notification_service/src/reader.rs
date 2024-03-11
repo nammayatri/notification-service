@@ -9,23 +9,20 @@
 use crate::{
     common::{
         types::*,
-        utils::{
-            get_timestamp_from_stream_id, hash_uuid, is_stream_id_less_or_eq,
-            transform_notification_data_to_payload,
-        },
+        utils::{hash_uuid, is_stream_id_less_or_eq, transform_notification_data_to_payload},
     },
-    kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
     redis::commands::{
-        clean_up_notification, get_client_last_sent_notification, get_notification_stream_id,
-        read_client_notifications, set_clients_last_sent_notification, set_notification_stream_id,
+        clean_up_notification, get_client_last_sent_notification, read_client_notifications,
+        set_clients_last_sent_notification, set_notification_stream_id,
     },
-    tools::prometheus::{EXPIRED_NOTIFICATIONS, RETRIED_NOTIFICATIONS},
+    tools::prometheus::{
+        CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+    },
     NotificationPayload,
 };
 use anyhow::Result;
 use chrono::Utc;
 use itertools::Itertools;
-use rdkafka::producer::FutureProducer;
 use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
 use std::{
@@ -41,61 +38,6 @@ use tokio::{
 };
 use tonic::Status;
 use tracing::*;
-
-async fn clean_up_expired_notification(
-    redis_pool: &RedisConnectionPool,
-    client_id: &str,
-    notification_id: &str,
-    kafka_producer: &Option<FutureProducer>,
-    kafka_topic: &str,
-    shard: u64,
-) {
-    EXPIRED_NOTIFICATIONS.inc();
-
-    match get_notification_stream_id(redis_pool, notification_id).await {
-        Ok(Some(StreamEntry(notification_stream_id))) => {
-            let (
-                cloned_kafka_producer,
-                cloned_kafka_topic,
-                cloned_client_id,
-                cloned_notification_id,
-                notification_created_at,
-            ) = (
-                kafka_producer.clone(),
-                kafka_topic.to_string(),
-                client_id.to_string(),
-                notification_id.to_string(),
-                get_timestamp_from_stream_id(&notification_stream_id),
-            );
-            tokio::spawn(async move {
-                let _ = kafka_stream_notification_updates(
-                    &cloned_kafka_producer,
-                    &cloned_kafka_topic,
-                    &cloned_client_id,
-                    cloned_notification_id,
-                    0,
-                    NotificationStatus::EXPIRED,
-                    notification_created_at,
-                    None,
-                )
-                .await;
-            });
-
-            let _ = clean_up_notification(
-                redis_pool,
-                client_id,
-                notification_id,
-                &notification_stream_id,
-                shard,
-            )
-            .await;
-        }
-        Ok(None) => error!("Notification Stream Id Not Found."),
-        Err(err) => {
-            error!("Error in getting Notification Stream Id : {:?}", err)
-        }
-    }
-}
 
 #[allow(clippy::type_complexity)]
 fn get_clients_last_seen_notification_id(
@@ -144,9 +86,8 @@ pub async fn run_notification_reader(
     reader_delay_seconds: u64,
     retry_delay_seconds: u64,
     last_known_notification_cache_expiry: u32,
-    kafka_producer: Option<FutureProducer>,
-    kafka_topic: String,
     max_shards: u64,
+    reader_batch: u64,
 ) {
     let mut clients_tx: FxHashMap<
         ClientId,
@@ -163,7 +104,8 @@ pub async fn run_notification_reader(
                 get_clients_last_seen_notification_id(&clients_tx),
                 last_known_notification_cache_expiry,
             )
-            .await;
+            .await
+            .map_err(|err| error!("Error in set_clients_last_sent_notification : {}", err));
 
             break;
         }
@@ -174,10 +116,12 @@ pub async fn run_notification_reader(
                         match client_tx {
                             Some(client_tx) => {
                                 info!("[Client Connected] : {:?}", client_id);
+                                CONNECTED_CLIENTS.inc();
                                 let last_read_notification_id = get_client_last_sent_notification(&redis_pool, &client_id).await;
                                 clients_tx.insert(client_id, (client_tx, last_read_notification_id.map_or(StreamEntry::default(), |notification_id| notification_id.unwrap_or_default())));
                             },
                             None => {
+                                CONNECTED_CLIENTS.dec();
                                 error!("[Client Disconnected] : {:?}", client_id);
                                 clients_tx.remove(&client_id);
                             }
@@ -197,13 +141,22 @@ pub async fn run_notification_reader(
                         .group_by(|client_id| hash_uuid(&client_id.inner()) % max_shards);
                 for (shard, clients) in &clients_grouped_by_shard {
                     let clients_last_seen_notification_id = clients.map(|client_id| (client_id.clone(), clients_tx[client_id].1.clone())).collect();
-                    match read_client_notifications(&redis_pool, clients_last_seen_notification_id, shard).await {
+                    match read_client_notifications(&redis_pool, clients_last_seen_notification_id, shard, reader_batch).await {
                         Ok(notifications) => {
                             for (client_id, notifications) in notifications {
                                 for notification in notifications {
                                     if notification.ttl < Utc::now() {
                                         // Expired notifications
-                                        let _ = clean_up_expired_notification(&redis_pool, &client_id, &notification.id.inner(), &kafka_producer, &kafka_topic, shard).await;
+                                        EXPIRED_NOTIFICATIONS.inc();
+                                        TOTAL_NOTIFICATIONS.dec();
+                                        let _ = clean_up_notification(
+                                            &redis_pool,
+                                            &client_id,
+                                            &notification.id.inner(),
+                                            &notification.stream_id.inner(),
+                                            shard,
+                                        )
+                                        .await.map_err(|err| error!("Error in clean_up_notification : {}", err));
                                     } else if let Some((client_tx, client_last_seen_stream_id)) = clients_tx.get(&ClientId(client_id.to_owned())) {
                                         // Older Sent Notifications to be sent again for retry
                                         if is_stream_id_less_or_eq(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str()) {
@@ -212,13 +165,14 @@ pub async fn run_notification_reader(
                                             if can_retry(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str(), retry_delay_seconds) {
                                                 // Notifications to be retried
                                                 RETRIED_NOTIFICATIONS.inc();
-                                                let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                                let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await.map_err(|err| error!("Error in client_tx.send : {}", err));
                                             }
                                         } else {
                                             // Send Notification First Time
+                                            TOTAL_NOTIFICATIONS.inc();
                                             clients_seen_notification_id.insert(client_id.to_owned(), notification.stream_id.to_owned());
-                                            let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await;
-                                            let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await;
+                                            let _ = set_notification_stream_id(&redis_pool, &notification.id.inner(), &notification.stream_id.inner(), notification.ttl).await.map_err(|err| error!("Error in set_notification_stream_id : {}", err));
+                                            let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await.map_err(|err| error!("Error in client_tx.send : {}", err));
                                         }
                                     } else {
                                         warn!("Client ({:?}) entry does not exist, client got disconnected intermittently.", client_id);

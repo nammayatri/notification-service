@@ -58,6 +58,7 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
             )]
             .to_vec(),
             ["0-0".to_string()].to_vec(),
+            Some(app_state.reader_batch),
         )
         .await?;
 

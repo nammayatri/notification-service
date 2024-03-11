@@ -12,7 +12,6 @@ use crate::{
         utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
     },
     environment::AppState,
-    kafka::{producers::kafka_stream_notification_updates, types::NotificationStatus},
     notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
@@ -21,7 +20,7 @@ use crate::{
     },
     tools::{
         error::AppError,
-        prometheus::{CONNECTED_CLIENTS, NOTIFICATION_LATENCY},
+        prometheus::{DELIVERED_NOTIFICATIONS, NOTIFICATION_LATENCY, TOTAL_NOTIFICATIONS},
     },
     NotificationAck, NotificationPayload,
 };
@@ -112,7 +111,6 @@ impl Notification for NotificationService {
             })?
         };
 
-        CONNECTED_CLIENTS.inc();
         info!("Connection Successful - ClientId : {client_id} - token : {token}");
 
         let (client_tx, client_rx) = mpsc::channel(100000);
@@ -129,11 +127,9 @@ impl Notification for NotificationService {
             )))?
         }
 
-        let (redis_pool, read_notification_tx, producer, topic, max_shards) = (
+        let (redis_pool, read_notification_tx, max_shards) = (
             self.app_state.redis_pool.clone(),
             self.read_notification_tx.clone(),
-            self.app_state.producer.clone(),
-            self.app_state.notification_kafka_topic.clone(),
             self.app_state.max_shards,
         );
         tokio::spawn(async move {
@@ -147,34 +143,9 @@ impl Notification for NotificationService {
                             Ok(Some(StreamEntry(notification_stream_id))) => {
                                 let Timestamp(notification_created_at) =
                                     get_timestamp_from_stream_id(&notification_stream_id);
-
                                 notification_latency!(notification_created_at);
-
-                                let (
-                                    producer_cloned,
-                                    topic_cloned,
-                                    client_id_cloned,
-                                    notification_id_cloned,
-                                ) = (
-                                    producer.clone(),
-                                    topic.clone(),
-                                    client_id.clone(),
-                                    notification_ack.id.clone(),
-                                );
-                                tokio::spawn(async move {
-                                    let _ = kafka_stream_notification_updates(
-                                        &producer_cloned,
-                                        &topic_cloned,
-                                        &client_id_cloned,
-                                        notification_id_cloned,
-                                        0,
-                                        NotificationStatus::DELIVERED,
-                                        Timestamp(notification_created_at),
-                                        Some(Timestamp(Utc::now())),
-                                    )
-                                    .await;
-                                });
-
+                                TOTAL_NOTIFICATIONS.dec();
+                                DELIVERED_NOTIFICATIONS.inc();
                                 let _ = clean_up_notification(
                                     &redis_pool,
                                     &client_id,
@@ -182,11 +153,18 @@ impl Notification for NotificationService {
                                     &notification_stream_id,
                                     hash_uuid(&client_id) % max_shards,
                                 )
-                                .await;
+                                .await
+                                .map_err(|err| error!("Error in clean_up_notification : {}", err));
                             }
-                            Ok(None) => error!("Notification Stream Id Not Found."),
+                            Ok(None) => {
+                                TOTAL_NOTIFICATIONS.dec();
+                                DELIVERED_NOTIFICATIONS.inc();
+                                error!("Notification Stream Id Not Found.");
+                            }
                             Err(err) => {
-                                error!("Error in getting Notification Stream Id : {:?}", err)
+                                TOTAL_NOTIFICATIONS.dec();
+                                DELIVERED_NOTIFICATIONS.inc();
+                                error!("Error in getting Notification Stream Id : {:?}", err);
                             }
                         }
                     }

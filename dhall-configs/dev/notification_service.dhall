@@ -20,11 +20,6 @@ let logger_cfg = {
     log_to_file = False
 }
 
-let kafka_cfg = {
-    kafka_key = "bootstrap.servers",
-    kafka_host = "0.0.0.0:29092"
-}
-
 let internal_auth_cfg = {
     auth_url = "http://127.0.0.1:8016/internal/auth",
     auth_api_key = "ae288466-2add-11ee-be56-0242ac120002",
@@ -37,10 +32,9 @@ in {
     internal_auth_cfg = internal_auth_cfg,
     logger_cfg = logger_cfg,
     redis_cfg = redis_cfg,
-    kafka_cfg = kafka_cfg,
     last_known_notification_cache_expiry = 86400,
-    notification_kafka_topic = "notification-stats",
     reader_delay_seconds = 1,
     retry_delay_seconds = 5,
-    max_shards = +15,
+    max_shards = +128,
+    reader_batch = 5
 }

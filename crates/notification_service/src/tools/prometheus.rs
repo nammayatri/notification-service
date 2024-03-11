@@ -27,6 +27,18 @@ pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync:
         .expect("Failed to register connected clients metrics")
 });
 
+pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntGauge> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_gauge!("total_notifications", "Total Notifications")
+            .expect("Failed to register total notifications metrics")
+    });
+
+pub static DELIVERED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_counter!("delivered_notifications", "Delivered Notifications")
+            .expect("Failed to register delivered notifications metrics")
+    });
+
 pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
     once_cell::sync::Lazy::new(|| {
         register_int_counter!("expired_notifications", "Expired Notifications")
@@ -110,6 +122,16 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(CONNECTED_CLIENTS.to_owned()))
         .expect("Failed to register connected clients metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(TOTAL_NOTIFICATIONS.to_owned()))
+        .expect("Failed to register total notifications metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(DELIVERED_NOTIFICATIONS.to_owned()))
+        .expect("Failed to register delivered notifications metrics");
 
     prometheus
         .registry
