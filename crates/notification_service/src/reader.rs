@@ -94,6 +94,7 @@ pub async fn run_notification_reader(
         (Sender<Result<NotificationPayload, Status>>, StreamEntry),
     > = FxHashMap::default();
     let mut reader_timer = interval(Duration::from_secs(reader_delay_seconds));
+    let mut retry_timer = 0.0;
 
     loop {
         if graceful_termination_requested.load(Ordering::Relaxed) {
@@ -134,6 +135,7 @@ pub async fn run_notification_reader(
                 }
             },
             _ = reader_timer.tick() => {
+                retry_timer += (reader_delay_seconds / retry_delay_seconds) as f64;
                 let mut clients_seen_notification_id = FxHashMap::default();
                 let clients_grouped_by_shard =
                     clients_tx
@@ -162,9 +164,10 @@ pub async fn run_notification_reader(
                                         if is_stream_id_less_or_eq(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str()) {
                                             // Notifications whose acknowledgedement has been delayed since a duration `retry_delay_seconds`
                                             // from when it had to be sent `notification_stream_id` only has to be retried
-                                            if can_retry(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str(), retry_delay_seconds) {
+                                            if retry_timer > retry_delay_seconds as f64 && can_retry(&notification.stream_id.inner(), client_last_seen_stream_id.inner().as_str(), retry_delay_seconds) {
                                                 // Notifications to be retried
                                                 RETRIED_NOTIFICATIONS.inc();
+                                                retry_timer = 0.0;
                                                 let _ = client_tx.send(Ok(transform_notification_data_to_payload(notification))).await.map_err(|err| error!("Error in client_tx.send : {}", err));
                                             }
                                         } else {
