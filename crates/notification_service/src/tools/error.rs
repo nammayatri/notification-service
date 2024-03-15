@@ -31,7 +31,6 @@ impl From<AppError> for Status {
             AppError::InvalidRequest(message) => Status::invalid_argument(message),
             AppError::DriverAppAuthFailed => Status::invalid_argument("AUTH_FAILED"),
             AppError::DriverAppUnauthorized => Status::unauthenticated("UNAUTHORIZED"),
-            // _ => Status::unknown("Unknown error"),
         }
     }
 }

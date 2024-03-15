@@ -10,8 +10,6 @@
         services.redis-cluster."redis" = {
           enable = true;
         };
-        services.zookeeper."zookeeper".enable = true;
-        services.apache-kafka."kafka".enable = true;
       };
 
       # Flake outputs

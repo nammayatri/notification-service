@@ -11,10 +11,12 @@ const CLIENT_ID: &str = "476c4daf-7480-4cf7-aa6a-27052a80a1df";
 
 #[tokio::test]
 async fn generate_and_add_notifications() -> anyhow::Result<()> {
+    use chrono::Utc;
     use notification_service::common::utils::decode_stream;
     use notification_service::environment::{AppConfig, AppState};
     use notification_service::redis::types::NotificationData;
     use notification_service::{common::utils::hash_uuid, redis::keys::notification_client_key};
+    use std::time::Duration;
 
     if let Ok(current_dir) = std::env::current_dir() {
         println!("Current working directory: {}", current_dir.display());
@@ -36,14 +38,14 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         ("title", "New ride available for offering"),
         ("body", "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters"),
         ("show", "SHOW"),
-        ("created_at", "2024-01-01T13:45:38.057846262Z"),
-        ("ttl", "2024-01-26T13:45:38.057846262Z")
+        ("created_at", &Utc::now().format("%Y-%m-%dT%H:%M:%S%.fZ").to_string()),
+        ("ttl", &(Utc::now() + Duration::from_secs(30)).format("%Y-%m-%dT%H:%M:%S%.fZ").to_string())
     ];
 
     app_state
         .redis_pool
         .xadd(
-            &notification_client_key(CLIENT_ID, hash_uuid(CLIENT_ID) % app_state.max_shards),
+            &notification_client_key(CLIENT_ID, &(hash_uuid(CLIENT_ID) % app_state.max_shards)),
             data.to_vec(),
             1000,
         )
@@ -54,11 +56,11 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
         .xread(
             [notification_client_key(
                 CLIENT_ID,
-                hash_uuid(CLIENT_ID) % app_state.max_shards,
+                &(hash_uuid(CLIENT_ID) % app_state.max_shards),
             )]
             .to_vec(),
             ["0-0".to_string()].to_vec(),
-            Some(app_state.reader_batch),
+            None,
         )
         .await?;
 
@@ -69,6 +71,8 @@ async fn generate_and_add_notifications() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn connect_client_without_ack() -> anyhow::Result<()> {
+    use chrono::Utc;
+
     let mut attempt_count = 0;
 
     loop {
@@ -95,8 +99,8 @@ async fn connect_client_without_ack() -> anyhow::Result<()> {
             let mut inbound = response.into_inner();
 
             while let Some(response) = tokio_stream::StreamExt::next(&mut inbound).await {
-                let notification = response?;
-                println!("{:?}", notification);
+                let _notification = response?;
+                println!("Time : {}", Utc::now().format("%Y-%m-%dT%H:%M:%S%.fZ"));
             }
 
             Ok(())

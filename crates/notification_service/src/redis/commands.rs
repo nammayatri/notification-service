@@ -14,16 +14,14 @@ use crate::common::{
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
-use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
 use tracing::*;
 
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
     clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
-    shard: u64,
-    batch: u64,
-) -> Result<FxHashMap<String, Vec<NotificationData>>> {
+    Shard(shard): &Shard,
+) -> Result<Vec<(Shard, ClientId, Vec<NotificationData>)>> {
     let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
         clients_last_seen_notification_id
             .into_iter()
@@ -33,19 +31,19 @@ pub async fn read_client_notifications(
             .unzip();
 
     if client_stream_keys.is_empty() {
-        return Ok(FxHashMap::default());
+        return Ok(Vec::default());
     }
 
     let notifications = redis_pool
         .xread(
             client_stream_keys.to_owned(),
             client_stream_ids.to_owned(),
-            Some(batch),
+            None,
         )
         .await?;
     let notifications = decode_stream::<NotificationData>(notifications)?;
 
-    let mut result = FxHashMap::default();
+    let mut result = Vec::default();
     for (key, val) in notifications {
         match Regex::new(r"client-([0-9a-fA-F-]+):") {
             Ok(regex) => {
@@ -53,15 +51,20 @@ pub async fn read_client_notifications(
                     .captures(&key)
                     .and_then(|captures| captures.get(1).map(|m| m.as_str()))
                 {
-                    Some(client_id) => result.insert(client_id.to_string(), val),
+                    Some(client_id) => {
+                        result.push((Shard(*shard), ClientId(client_id.to_string()), val))
+                    }
                     None => {
-                        error!("Regex Match Failed For Key : {}", key);
+                        error!("Regex Match Failed For Key : {}, Shard : {}", key, shard);
                         continue;
                     }
                 }
             }
             Err(err) => {
-                error!("Regex Parsing Failed For Key : {}, Error : {}", key, err);
+                error!(
+                    "Regex Parsing Failed For Key : {}, Shard : {}, Error : {}",
+                    key, shard, err
+                );
                 continue;
             }
         };
@@ -124,7 +127,7 @@ pub async fn clean_up_notification(
     client_id: &str,
     notification_id: &str,
     notification_stream_id: &str,
-    shard: u64,
+    Shard(shard): &Shard,
 ) -> Result<()> {
     redis_pool
         .delete_key(&notification_stream_key(notification_id))

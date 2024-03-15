@@ -16,7 +16,7 @@ let redis_cfg = {
 let LogLevel = < TRACE | DEBUG | INFO | WARN | ERROR | OFF >
 
 let logger_cfg = {
-    level = LogLevel.DEBUG,
+    level = LogLevel.ERROR,
     log_to_file = False
 }
 
@@ -28,13 +28,12 @@ let internal_auth_cfg = {
 
 in {
     grpc_port = 50051,
-    http_server_port = 9090,
+    http_server_port = 9091,
     internal_auth_cfg = internal_auth_cfg,
     logger_cfg = logger_cfg,
     redis_cfg = redis_cfg,
     last_known_notification_cache_expiry = 86400,
     reader_delay_seconds = 1,
     retry_delay_seconds = 5,
-    max_shards = +128,
-    reader_batch = 5
+    max_shards = +128
 }

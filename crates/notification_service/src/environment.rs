@@ -32,7 +32,6 @@ pub struct AppConfig {
     pub reader_delay_seconds: u64,
     pub retry_delay_seconds: u64,
     pub max_shards: u64,
-    pub reader_batch: u64,
 }
 
 #[derive(Clone)]
@@ -47,7 +46,6 @@ pub struct AppState {
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub max_shards: u64,
-    pub reader_batch: u64,
 }
 
 impl AppState {
@@ -70,7 +68,6 @@ impl AppState {
             grpc_port: app_config.grpc_port,
             http_server_port: app_config.http_server_port,
             max_shards: app_config.max_shards,
-            reader_batch: app_config.reader_batch,
         }
     }
 }

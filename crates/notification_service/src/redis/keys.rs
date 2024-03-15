@@ -6,7 +6,7 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-pub fn notification_client_key(client_id: &str, shard: u64) -> String {
+pub fn notification_client_key(client_id: &str, shard: &u64) -> String {
     format!("notification:client-{}:{{{shard}}}", client_id)
 }
 

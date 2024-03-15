@@ -83,7 +83,6 @@ async fn main() -> Result<()> {
         app_state.retry_delay_seconds,
         app_state.last_known_notification_cache_expiry,
         app_state.max_shards,
-        app_state.reader_batch,
     );
 
     let prometheus = prometheus_metrics();

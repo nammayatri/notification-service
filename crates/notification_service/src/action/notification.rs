@@ -151,7 +151,7 @@ impl Notification for NotificationService {
                                     &client_id,
                                     &notification_ack.id,
                                     &notification_stream_id,
-                                    hash_uuid(&client_id) % max_shards,
+                                    &Shard(hash_uuid(&client_id) % max_shards),
                                 )
                                 .await
                                 .map_err(|err| error!("Error in clean_up_notification : {}", err));
@@ -182,7 +182,20 @@ impl Notification for NotificationService {
                         }
                         break;
                     }
-                    _ => continue,
+                    Err(err) => {
+                        error!("Client ({}) Disconnected : {}", client_id, err);
+                        if let Err(err) = read_notification_tx
+                            .clone()
+                            .send((ClientId(client_id.to_owned()), None))
+                            .await
+                        {
+                            error!(
+                                "Failed to remove client's ({:?}) instance from Reader : {:?}",
+                                client_id, err
+                            );
+                        }
+                        break;
+                    }
                 }
             }
         });

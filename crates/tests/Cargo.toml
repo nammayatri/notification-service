@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = "1.28.2"
+chrono = { version = "0.4.23", features = ["serde"] }
 futures = "0.3"
 anyhow = "1.0.75"
 serde_dhall = "0.12.1"

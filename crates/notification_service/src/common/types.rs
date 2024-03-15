@@ -5,8 +5,12 @@
     or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details. You should have received a copy of
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
+use crate::NotificationPayload;
 use chrono::{DateTime, Utc};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::Sender;
+use tonic::Status;
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 #[macros::impl_getter]
@@ -15,6 +19,10 @@ pub struct Token(pub String);
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, Hash, PartialEq)]
 #[macros::impl_getter]
 pub struct ClientId(pub String);
+
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, Hash, PartialEq)]
+#[macros::impl_getter]
+pub struct Shard(pub u64);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Hash)]
 #[macros::impl_getter]
@@ -33,3 +41,7 @@ impl Default for StreamEntry {
         Self("0-0".to_string())
     }
 }
+
+pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
+
+pub type ReaderMap = FxHashMap<Shard, FxHashMap<ClientId, (ClientTx, Option<StreamEntry>)>>;
