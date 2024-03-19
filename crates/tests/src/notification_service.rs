@@ -182,3 +182,138 @@ async fn connect_client_with_ack() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_select_behaviour() {
+    let timer_1_delay = std::time::Duration::from_secs(1);
+    let timer_2_delay = std::time::Duration::from_secs(3);
+
+    let mut timer1 = tokio::time::interval(timer_1_delay);
+    let mut timer2 = tokio::time::interval(timer_2_delay);
+
+    let mut last_timer_1 = chrono::Utc::now() - timer_1_delay;
+    let mut last_timer_2 = chrono::Utc::now() - timer_2_delay;
+
+    let all_delay = std::time::Duration::from_secs(1);
+
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel(128);
+
+    tokio::spawn(async move {
+        loop {
+            let _ = tx1.send(chrono::Utc::now()).await;
+            tokio::time::sleep(all_delay).await;
+        }
+    });
+
+    loop {
+        tokio::select! {
+            val = rx1.recv() => {
+                if let Some(val) = val {
+                    println!("Time Rx1 Delay : {}", (chrono::Utc::now() - val).num_milliseconds());
+                }
+            }
+            _ = timer1.tick() => {
+                if (chrono::Utc::now() - last_timer_1 - chrono::Duration::seconds(1)).num_milliseconds() < 0 {
+                    continue;
+                }
+                println!("Time 1 Delay : {}", (chrono::Utc::now() - last_timer_1 - chrono::Duration::seconds(1)).num_milliseconds());
+                tokio::time::sleep(all_delay).await;
+                last_timer_1 = chrono::Utc::now();
+            }
+            _ = timer2.tick() => {
+                if (chrono::Utc::now() - last_timer_2 - chrono::Duration::seconds(3)).num_milliseconds() < 0 {
+                    continue;
+                }
+                println!("Time 2 Delay : {}", (chrono::Utc::now() - last_timer_2 - chrono::Duration::seconds(3)).num_milliseconds());
+                tokio::time::sleep(all_delay).await;
+                last_timer_2 = chrono::Utc::now();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_delay_measurement() {
+    use std::{collections::HashMap, sync::Arc};
+    use tokio::{sync::RwLock, time::sleep};
+
+    let all_delay = std::time::Duration::from_secs(1);
+    let shared_state: Arc<RwLock<HashMap<String, String>>> =
+        Arc::new(RwLock::new(HashMap::default()));
+
+    let (tx1, rx1) = tokio::sync::mpsc::channel(128);
+    let tx1_clone = tx1.clone();
+
+    tokio::spawn(task_1(all_delay, shared_state.clone()));
+    tokio::spawn(task_2(all_delay, shared_state.clone()));
+    tokio::spawn(task_rx(rx1, all_delay, shared_state.clone()));
+
+    tokio::spawn(async move {
+        loop {
+            let _ = tx1_clone.send(chrono::Utc::now()).await;
+            tokio::time::sleep(all_delay).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    async fn task_1(
+        all_delay: std::time::Duration,
+        shared_state: Arc<RwLock<HashMap<String, String>>>,
+    ) {
+        let delay = std::time::Duration::from_secs(1);
+        let mut timer_delay = tokio::time::interval(delay);
+        let mut last_timer_1 = chrono::Utc::now() - delay;
+        loop {
+            println!(
+                "Time 1 Delay : {}",
+                (chrono::Utc::now() - last_timer_1 - chrono::Duration::seconds(1))
+                    .num_milliseconds()
+            );
+            let _ = shared_state.read().await;
+            tokio::time::sleep(all_delay).await;
+            last_timer_1 = chrono::Utc::now();
+            timer_delay.tick().await;
+        }
+    }
+
+    async fn task_2(
+        all_delay: std::time::Duration,
+        shared_state: Arc<RwLock<HashMap<String, String>>>,
+    ) {
+        let delay = std::time::Duration::from_secs(3);
+        let mut last_timer_2 = chrono::Utc::now() - delay;
+
+        loop {
+            println!(
+                "Time 2 Delay : {}",
+                (chrono::Utc::now() - last_timer_2 - chrono::Duration::seconds(3))
+                    .num_milliseconds()
+            );
+            let _ = shared_state.read().await;
+            tokio::time::sleep(all_delay).await;
+            last_timer_2 = chrono::Utc::now();
+            sleep(delay).await
+        }
+    }
+
+    async fn task_rx(
+        mut rx1: tokio::sync::mpsc::Receiver<chrono::DateTime<chrono::Utc>>,
+        all_delay: std::time::Duration,
+        shared_state: Arc<RwLock<HashMap<String, String>>>,
+    ) {
+        loop {
+            if let Some(val) = rx1.recv().await {
+                println!(
+                    "Time Rx1 Delay : {}",
+                    (chrono::Utc::now() - val).num_milliseconds()
+                );
+                let _ = shared_state
+                    .write()
+                    .await
+                    .insert("Hello".to_string(), "World".to_string());
+                tokio::time::sleep(all_delay).await;
+            }
+        }
+    }
+}

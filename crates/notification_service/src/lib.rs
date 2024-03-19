@@ -15,4 +15,5 @@ pub mod environment;
 pub mod outbound;
 pub mod reader;
 pub mod redis;
+pub mod server;
 pub mod tools;
