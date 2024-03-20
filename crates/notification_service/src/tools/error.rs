@@ -6,15 +6,7 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use serde::{Deserialize, Serialize};
 use tonic::Status;
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ErrorBody {
-    error_message: String,
-    pub error_code: String,
-}
 
 #[macros::add_error]
 pub enum AppError {
@@ -27,8 +19,8 @@ pub enum AppError {
 impl From<AppError> for Status {
     fn from(app_error: AppError) -> Self {
         match app_error {
-            AppError::InternalError(message) => Status::internal(message),
-            AppError::InvalidRequest(message) => Status::invalid_argument(message),
+            AppError::InternalError(_) => Status::internal("INTERNAL_ERROR"),
+            AppError::InvalidRequest(_) => Status::invalid_argument("INVALID_REQUEST"),
             AppError::DriverAppAuthFailed => Status::invalid_argument("AUTH_FAILED"),
             AppError::DriverAppUnauthorized => Status::unauthenticated("UNAUTHORIZED"),
         }

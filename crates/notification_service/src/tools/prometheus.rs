@@ -13,6 +13,14 @@ use prometheus::{
     IntCounter, IntGauge,
 };
 
+pub static INCOMING_API: once_cell::sync::Lazy<HistogramVec> = once_cell::sync::Lazy::new(|| {
+    register_histogram_vec!(
+        opts!("grpc_request_duration_seconds", "Incoming API requests").into(),
+        &["method", "handler", "status_code", "code", "version"]
+    )
+    .expect("Failed to register incoming API metrics")
+});
+
 pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
     once_cell::sync::Lazy::new(|| {
         register_histogram_vec!(
@@ -59,6 +67,17 @@ pub static CALL_EXTERNAL_API: once_cell::sync::Lazy<HistogramVec> =
         )
         .expect("Failed to register call external API metrics")
     });
+
+#[macro_export]
+macro_rules! incoming_api {
+    ($method:expr, $endpoint:expr, $status:expr, $code:expr, $start:expr) => {
+        let duration = $start.elapsed().as_secs_f64();
+        let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
+        INCOMING_API
+            .with_label_values(&[$method, $endpoint, $status, $code, version.as_str()])
+            .observe(duration);
+    };
+}
 
 #[macro_export]
 macro_rules! notification_latency {
@@ -112,6 +131,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .endpoint("/metrics")
         .build()
         .expect("Failed to create Prometheus Metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(INCOMING_API.to_owned()))
+        .expect("Failed to register incoming API metrics");
 
     prometheus
         .registry

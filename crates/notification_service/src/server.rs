@@ -11,6 +11,7 @@ use crate::{
     common::types::*,
     environment::{AppConfig, AppState},
     health_server::HealthServer,
+    middleware::request_response_tracking::RequestResponseTrackingMiddlewareLayer,
     notification_server::NotificationServer,
     reader::run_notification_reader,
     tools::{logger::setup_tracing, prometheus::prometheus_metrics},
@@ -93,8 +94,12 @@ pub async fn run_server() -> Result<()> {
     .run();
 
     let grpc_port = app_state.grpc_port;
+    let middleware = tower::ServiceBuilder::new()
+        .layer(RequestResponseTrackingMiddlewareLayer)
+        .into_inner();
     let notification_service = NotificationService::new(read_notification_tx, app_state);
     let grpc_server = Server::builder()
+        .layer(middleware)
         .add_service(NotificationServer::new(notification_service))
         .add_service(HealthServer::new(Healthcheck))
         .serve(SocketAddr::V4(SocketAddrV4::new(

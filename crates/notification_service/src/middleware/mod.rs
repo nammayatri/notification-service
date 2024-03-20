@@ -6,15 +6,4 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-tonic::include_proto!("notification_service");
-tonic::include_proto!("healthcheck");
-
-pub mod action;
-pub mod common;
-pub mod environment;
-pub mod middleware;
-pub mod outbound;
-pub mod reader;
-pub mod redis;
-pub mod server;
-pub mod tools;
+pub mod request_response_tracking;

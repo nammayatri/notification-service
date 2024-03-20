@@ -317,3 +317,12 @@ async fn test_delay_measurement() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_hash_uuid_mod_shards() {
+    use notification_service::common::utils::hash_uuid;
+
+    let shards = 128;
+    let uuid = uuid::Uuid::new_v4();
+    println!("{}", hash_uuid(&uuid.to_string()) % shards);
+}
