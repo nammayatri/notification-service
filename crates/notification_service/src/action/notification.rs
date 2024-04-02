@@ -20,7 +20,7 @@ use crate::{
     },
     tools::{
         error::AppError,
-        prometheus::{DELIVERED_NOTIFICATIONS, NOTIFICATION_LATENCY, TOTAL_NOTIFICATIONS},
+        prometheus::{DELIVERED_NOTIFICATIONS, NOTIFICATION_LATENCY},
     },
     NotificationAck, NotificationPayload,
 };
@@ -144,7 +144,6 @@ impl Notification for NotificationService {
                                 let Timestamp(notification_created_at) =
                                     get_timestamp_from_stream_id(&notification_stream_id);
                                 notification_latency!(notification_created_at);
-                                TOTAL_NOTIFICATIONS.dec();
                                 DELIVERED_NOTIFICATIONS.inc();
                                 let _ = clean_up_notification(
                                     &redis_pool,

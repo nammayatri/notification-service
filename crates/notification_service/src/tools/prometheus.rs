@@ -8,10 +8,7 @@
 #![allow(clippy::expect_used)]
 
 use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
-use prometheus::{
-    opts, register_histogram_vec, register_int_counter, register_int_gauge, HistogramVec,
-    IntCounter, IntGauge,
-};
+use prometheus::{opts, register_histogram_vec, register_int_counter, HistogramVec, IntCounter};
 
 pub static INCOMING_API: once_cell::sync::Lazy<HistogramVec> = once_cell::sync::Lazy::new(|| {
     register_histogram_vec!(
@@ -30,14 +27,15 @@ pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
         .expect("Failed to register notifiction latency metrics")
     });
 
-pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync::Lazy::new(|| {
-    register_int_gauge!("connected_clients", "Connected Clients")
-        .expect("Failed to register connected clients metrics")
-});
-
-pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntGauge> =
+pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntCounter> =
     once_cell::sync::Lazy::new(|| {
-        register_int_gauge!("total_notifications", "Total Notifications")
+        register_int_counter!("connected_clients", "Connected Clients")
+            .expect("Failed to register connected clients metrics")
+    });
+
+pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_counter!("total_notifications", "Total Notifications")
             .expect("Failed to register total notifications metrics")
     });
 

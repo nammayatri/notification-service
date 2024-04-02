@@ -103,7 +103,6 @@ async fn clear_expired_notification(
     notification_stream_id: &StreamEntry,
 ) {
     EXPIRED_NOTIFICATIONS.inc();
-    TOTAL_NOTIFICATIONS.dec();
     let _ = clean_up_notification(
         redis_pool,
         client_id,
@@ -204,7 +203,6 @@ async fn client_reciever_looper(
                 );
             }
             None => {
-                CONNECTED_CLIENTS.dec();
                 error!("[Client Disconnected] : {:?}", client_id);
                 clients_tx
                     .write()
