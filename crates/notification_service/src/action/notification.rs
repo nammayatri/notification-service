@@ -115,24 +115,23 @@ impl Notification for NotificationService {
 
         let (client_tx, client_rx) = mpsc::channel(100000);
 
-        if let Err(err) = self
-            .read_notification_tx
-            .clone()
-            .send((ClientId(client_id.to_owned()), Some(client_tx)))
-            .await
-        {
-            Err(AppError::InternalError(format!(
-                "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
-                client_id, err
-            )))?
-        }
-
         let (redis_pool, read_notification_tx, max_shards) = (
             self.app_state.redis_pool.clone(),
             self.read_notification_tx.clone(),
             self.app_state.max_shards,
         );
         tokio::spawn(async move {
+            if let Err(err) = read_notification_tx
+                .clone()
+                .send((ClientId(client_id.to_owned()), Some(client_tx)))
+                .await
+            {
+                error!(
+                    "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
+                    client_id, err
+                )
+            }
+
             let mut stream = request.into_inner();
 
             loop {
