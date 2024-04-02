@@ -12,7 +12,7 @@ use crate::{
         utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
     },
     environment::AppState,
-    notification_latency,
+    notification_client_connection_duration, notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
     redis::commands::{
@@ -20,7 +20,9 @@ use crate::{
     },
     tools::{
         error::AppError,
-        prometheus::{DELIVERED_NOTIFICATIONS, NOTIFICATION_LATENCY},
+        prometheus::{
+            DELIVERED_NOTIFICATIONS, NOTIFICATION_CLIENT_CONNECTION_DURATION, NOTIFICATION_LATENCY,
+        },
     },
     NotificationAck, NotificationPayload,
 };
@@ -30,7 +32,10 @@ use futures::Stream;
 use reqwest::Url;
 use shared::redis::types::RedisConnectionPool;
 use std::{env::var, pin::Pin};
-use tokio::sync::mpsc::{self, Sender};
+use tokio::{
+    sync::mpsc::{self, Sender},
+    time::Instant,
+};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{metadata::MetadataMap, Request, Response, Status};
 use tracing::*;
@@ -86,6 +91,8 @@ impl Notification for NotificationService {
         &self,
         request: Request<tonic::Streaming<NotificationAck>>,
     ) -> Result<Response<Self::StreamPayloadStream>, Status> {
+        let start_time = Instant::now();
+
         let metadata: &MetadataMap = request.metadata();
         let token = metadata
             .get("token")
@@ -170,6 +177,7 @@ impl Notification for NotificationService {
                     }
                     Ok(None) => {
                         error!("Client ({}) Disconnected", client_id);
+                        notification_client_connection_duration!(start_time);
                         if let Err(err) = read_notification_tx
                             .clone()
                             .send((ClientId(client_id.to_owned()), None))
@@ -184,6 +192,7 @@ impl Notification for NotificationService {
                     }
                     Err(err) => {
                         error!("Client ({}) Disconnected : {}", client_id, err);
+                        notification_client_connection_duration!(start_time);
                         if let Err(err) = read_notification_tx
                             .clone()
                             .send((ClientId(client_id.to_owned()), None))

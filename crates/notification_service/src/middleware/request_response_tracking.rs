@@ -77,12 +77,11 @@ where
                     start_time
                 );
             } else {
-                // If the connection is terminated unexpectedly by client or server.
                 incoming_api!(
                     req_method.as_str(),
                     req_path.as_str(),
-                    "17",
-                    "CONNECTION_TERMINATED",
+                    "0",
+                    "OK",
                     start_time
                 );
             }

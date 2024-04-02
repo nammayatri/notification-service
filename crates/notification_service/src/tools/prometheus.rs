@@ -10,6 +10,19 @@
 use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
 use prometheus::{opts, register_histogram_vec, register_int_counter, HistogramVec, IntCounter};
 
+pub static NOTIFICATION_CLIENT_CONNECTION_DURATION: once_cell::sync::Lazy<HistogramVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_histogram_vec!(
+            opts!(
+                "notification_client_connection_duration",
+                "Notification Client Connection Duration"
+            )
+            .into(),
+            &[]
+        )
+        .expect("Failed to register notification client connection duration")
+    });
+
 pub static INCOMING_API: once_cell::sync::Lazy<HistogramVec> = once_cell::sync::Lazy::new(|| {
     register_histogram_vec!(
         opts!("grpc_request_duration_seconds", "Incoming API requests").into(),
@@ -65,6 +78,16 @@ pub static CALL_EXTERNAL_API: once_cell::sync::Lazy<HistogramVec> =
         )
         .expect("Failed to register call external API metrics")
     });
+
+#[macro_export]
+macro_rules! notification_client_connection_duration {
+    ($start:expr) => {
+        let duration = $start.elapsed().as_secs_f64();
+        NOTIFICATION_CLIENT_CONNECTION_DURATION
+            .with_label_values(&[])
+            .observe(duration);
+    };
+}
 
 #[macro_export]
 macro_rules! incoming_api {
@@ -129,6 +152,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .endpoint("/metrics")
         .build()
         .expect("Failed to create Prometheus Metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(NOTIFICATION_CLIENT_CONNECTION_DURATION.to_owned()))
+        .expect("Failed to register notification client connection duration");
 
     prometheus
         .registry
