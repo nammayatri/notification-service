@@ -246,7 +246,14 @@ async fn read_and_process_notification_looper(
 
             for notification in notifications {
                 if notification.ttl < Utc::now() {
-                    continue;
+                    clear_expired_notification(
+                        &Arc::clone(&redis_pool),
+                        &shard,
+                        &client_id,
+                        &notification.id,
+                        &notification.stream_id,
+                    )
+                    .await;
                 } else if let Some((client_tx, ref mut client_last_seen_stream_id)) = clients_tx
                     .write()
                     .await
