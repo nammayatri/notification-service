@@ -326,3 +326,14 @@ async fn test_hash_uuid_mod_shards() {
     let uuid = uuid::Uuid::new_v4();
     println!("{}", hash_uuid(&uuid.to_string()) % shards);
 }
+
+#[tokio::test]
+async fn test_time_diff() {
+    use chrono::Utc;
+    use notification_service::common::utils::abs_diff_utc_as_sec;
+    use std::time::Duration;
+
+    let old = Utc::now();
+    let new = Utc::now() + Duration::from_secs(30);
+    println!("{}", abs_diff_utc_as_sec(old, new) as u32)
+}
