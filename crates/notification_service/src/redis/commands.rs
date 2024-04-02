@@ -106,7 +106,7 @@ pub async fn set_notification_stream_id(
         .set_key_as_str(
             &notification_stream_key(notification_id),
             notification_stream_id,
-            6 * abs_diff_utc_as_sec(now, notification_ttl) as u32,
+            2 * abs_diff_utc_as_sec(now, notification_ttl) as u32,
         )
         .await?;
     Ok(())

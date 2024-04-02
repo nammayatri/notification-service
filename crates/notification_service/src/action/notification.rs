@@ -135,10 +135,14 @@ impl Notification for NotificationService {
         tokio::spawn(async move {
             let mut stream = request.into_inner();
 
-            // Acknowledgment for sent notification from the client
             loop {
                 match stream.message().await {
                     Ok(Some(notification_ack)) => {
+                        // This is during the initial connection
+                        if notification_ack.id.is_empty() {
+                            continue;
+                        }
+                        // Acknowledgment for sent notification from the client
                         match get_notification_stream_id(&redis_pool, &notification_ack.id).await {
                             Ok(Some(StreamEntry(notification_stream_id))) => {
                                 let Timestamp(notification_created_at) =
