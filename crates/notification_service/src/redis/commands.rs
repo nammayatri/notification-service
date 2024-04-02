@@ -141,6 +141,22 @@ pub async fn clean_up_notification(
     Ok(())
 }
 
+pub async fn set_client_last_sent_notification(
+    redis_pool: &RedisConnectionPool,
+    client_id: String,
+    last_seen_notification_id: String,
+    expiry_time: u32,
+) -> Result<()> {
+    redis_pool
+        .set_key(
+            &last_sent_client_notification_key(&client_id),
+            last_seen_notification_id,
+            expiry_time,
+        )
+        .await?;
+    Ok(())
+}
+
 pub async fn set_clients_last_sent_notification(
     redis_pool: &RedisConnectionPool,
     clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
@@ -149,13 +165,13 @@ pub async fn set_clients_last_sent_notification(
     for (ClientId(client_id), StreamEntry(last_seen_notification_id)) in
         clients_last_seen_notification_id
     {
-        redis_pool
-            .set_key(
-                &last_sent_client_notification_key(&client_id),
-                last_seen_notification_id,
-                expiry_time,
-            )
-            .await?;
+        set_client_last_sent_notification(
+            redis_pool,
+            client_id,
+            last_seen_notification_id,
+            expiry_time,
+        )
+        .await?;
     }
     Ok(())
 }
