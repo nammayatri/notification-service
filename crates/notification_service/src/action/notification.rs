@@ -157,12 +157,10 @@ impl Notification for NotificationService {
                                 .map_err(|err| error!("Error in clean_up_notification : {}", err));
                             }
                             Ok(None) => {
-                                TOTAL_NOTIFICATIONS.dec();
                                 DELIVERED_NOTIFICATIONS.inc();
                                 error!("Notification Stream Id Not Found.");
                             }
                             Err(err) => {
-                                TOTAL_NOTIFICATIONS.dec();
                                 DELIVERED_NOTIFICATIONS.inc();
                                 error!("Error in getting Notification Stream Id : {:?}", err);
                             }
