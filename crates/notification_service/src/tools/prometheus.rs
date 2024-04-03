@@ -18,7 +18,7 @@ pub static NOTIFICATION_CLIENT_CONNECTION_DURATION: once_cell::sync::Lazy<Histog
                 "Notification Client Connection Duration"
             )
             .into(),
-            &[]
+            &["status"]
         )
         .expect("Failed to register notification client connection duration")
     });
@@ -81,10 +81,10 @@ pub static CALL_EXTERNAL_API: once_cell::sync::Lazy<HistogramVec> =
 
 #[macro_export]
 macro_rules! notification_client_connection_duration {
-    ($start:expr) => {
+    ($status:expr, $start:expr) => {
         let duration = $start.elapsed().as_secs_f64();
         NOTIFICATION_CLIENT_CONNECTION_DURATION
-            .with_label_values(&[])
+            .with_label_values(&[$status])
             .observe(duration);
     };
 }

@@ -12,6 +12,7 @@ use tonic::Status;
 pub enum AppError {
     InternalError(String),
     InvalidRequest(String),
+    Timeout,
     DriverAppAuthFailed,
     DriverAppUnauthorized,
 }
@@ -21,6 +22,7 @@ impl From<AppError> for Status {
         match app_error {
             AppError::InternalError(_) => Status::internal("INTERNAL_ERROR"),
             AppError::InvalidRequest(_) => Status::invalid_argument("INVALID_REQUEST"),
+            AppError::Timeout => Status::internal("TIMEOUT"),
             AppError::DriverAppAuthFailed => Status::invalid_argument("AUTH_FAILED"),
             AppError::DriverAppUnauthorized => Status::unauthenticated("UNAUTHORIZED"),
         }

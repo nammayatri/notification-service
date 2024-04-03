@@ -240,7 +240,7 @@ async fn read_and_process_notification_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<RwLock<ReaderMap>>,
     delay: Duration,
-    last_known_notification_cache_expiry: u32,
+    _last_known_notification_cache_expiry: u32,
 ) {
     loop {
         let read_client_notifications_batch_task_result =
@@ -283,20 +283,20 @@ async fn read_and_process_notification_looper(
                             *client_last_seen_stream_id = Some(notification.stream_id);
                         }
                         Err(err) => {
-                            error!("[Client Connection Terminated] : {}", err);
-                            clients_tx
-                                .write()
-                                .await
-                                .get_mut(&shard)
-                                .and_then(|clients| {
-                                    clients.remove(&ClientId(client_id.to_owned()))
-                                });
-                            store_clients_last_sent_notification_context(
-                                redis_pool.clone(),
-                                clients_tx.clone(),
-                                last_known_notification_cache_expiry,
-                            )
-                            .await;
+                            error!("[Send Failed] : {}", err);
+                            // clients_tx
+                            //     .write()
+                            //     .await
+                            //     .get_mut(&shard)
+                            //     .and_then(|clients| {
+                            //         clients.remove(&ClientId(client_id.to_owned()))
+                            //     });
+                            // store_clients_last_sent_notification_context(
+                            //     redis_pool.clone(),
+                            //     clients_tx.clone(),
+                            //     last_known_notification_cache_expiry,
+                            // )
+                            // .await;
                         }
                     }
                 } else {
@@ -360,14 +360,14 @@ async fn retry_notifications_looper(
                         Ok(true) => RETRIED_NOTIFICATIONS.inc(),
                         Ok(false) => (),
                         Err(err) => {
-                            error!("[Client Connection Terminated] : {}", err);
-                            clients_tx
-                                .write()
-                                .await
-                                .get_mut(&shard)
-                                .and_then(|clients| {
-                                    clients.remove(&ClientId(client_id.to_owned()))
-                                });
+                            error!("[Send Failed] : {}", err);
+                            // clients_tx
+                            //     .write()
+                            //     .await
+                            //     .get_mut(&shard)
+                            //     .and_then(|clients| {
+                            //         clients.remove(&ClientId(client_id.to_owned()))
+                            //     });
                         }
                     }
                 } else {
