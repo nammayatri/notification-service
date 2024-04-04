@@ -14,7 +14,7 @@ use crate::common::{
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
-use shared::redis::types::RedisConnectionPool;
+use shared::redis::{error::RedisError, types::RedisConnectionPool};
 use tracing::*;
 
 pub async fn read_client_notifications(
@@ -100,7 +100,7 @@ pub async fn set_notification_stream_id(
     notification_id: &str,
     notification_stream_id: &str,
     notification_ttl: DateTime<Utc>,
-) -> Result<()> {
+) -> Result<(), RedisError> {
     let now = Utc::now();
     redis_pool
         .set_key_as_str(

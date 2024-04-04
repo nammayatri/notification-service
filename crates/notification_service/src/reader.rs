@@ -103,7 +103,7 @@ async fn send_notification(
         notification.ttl,
     )
     .await
-    .map_err(|err| error!("Error in set_notification_stream_id : {}", err));
+    .map_err(|err| error!("Error in set_notification_stream_id : {:?}", err));
     client_tx
         .send(Ok(transform_notification_data_to_payload(
             notification.clone(),
@@ -284,19 +284,6 @@ async fn read_and_process_notification_looper(
                         }
                         Err(err) => {
                             error!("[Send Failed] : {}", err);
-                            // clients_tx
-                            //     .write()
-                            //     .await
-                            //     .get_mut(&shard)
-                            //     .and_then(|clients| {
-                            //         clients.remove(&ClientId(client_id.to_owned()))
-                            //     });
-                            // store_clients_last_sent_notification_context(
-                            //     redis_pool.clone(),
-                            //     clients_tx.clone(),
-                            //     last_known_notification_cache_expiry,
-                            // )
-                            // .await;
                         }
                     }
                 } else {
@@ -361,13 +348,6 @@ async fn retry_notifications_looper(
                         Ok(false) => (),
                         Err(err) => {
                             error!("[Send Failed] : {}", err);
-                            // clients_tx
-                            //     .write()
-                            //     .await
-                            //     .get_mut(&shard)
-                            //     .and_then(|clients| {
-                            //         clients.remove(&ClientId(client_id.to_owned()))
-                            //     });
                         }
                     }
                 } else {
