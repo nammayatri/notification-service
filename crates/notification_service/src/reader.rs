@@ -205,33 +205,37 @@ async fn client_reciever_looper(
     max_shards: u64,
     last_known_notification_cache_expiry: u32,
 ) {
-    while let Some((client_id, client_tx)) = read_notification_rx.recv().await {
-        let shard = Shard(hash_uuid(&client_id.inner()) % max_shards);
-        match client_tx {
-            Some(client_tx) => {
-                info!("[Client Connected] : {:?}", client_id);
-                CONNECTED_CLIENTS.inc();
-                let last_read_notification_id =
-                    get_client_last_sent_notification(&redis_pool, &client_id).await;
-                clients_tx.write().await.entry(shard).or_default().insert(
-                    client_id,
-                    (client_tx, last_read_notification_id.ok().flatten()),
-                );
+    loop {
+        if let Some((client_id, client_tx)) = read_notification_rx.recv().await {
+            let shard = Shard(hash_uuid(&client_id.inner()) % max_shards);
+            match client_tx {
+                Some(client_tx) => {
+                    info!("[Client Connected] : {:?}", client_id);
+                    CONNECTED_CLIENTS.inc();
+                    let last_read_notification_id =
+                        get_client_last_sent_notification(&redis_pool, &client_id).await;
+                    clients_tx.write().await.entry(shard).or_default().insert(
+                        client_id,
+                        (client_tx, last_read_notification_id.ok().flatten()),
+                    );
+                }
+                None => {
+                    error!("[Client Disconnected] : {:?}", client_id);
+                    clients_tx
+                        .write()
+                        .await
+                        .get_mut(&shard)
+                        .and_then(|clients| clients.remove(&client_id));
+                    store_clients_last_sent_notification_context(
+                        redis_pool.clone(),
+                        clients_tx.clone(),
+                        last_known_notification_cache_expiry,
+                    )
+                    .await;
+                }
             }
-            None => {
-                error!("[Client Disconnected] : {:?}", client_id);
-                clients_tx
-                    .write()
-                    .await
-                    .get_mut(&shard)
-                    .and_then(|clients| clients.remove(&client_id));
-                store_clients_last_sent_notification_context(
-                    redis_pool.clone(),
-                    clients_tx.clone(),
-                    last_known_notification_cache_expiry,
-                )
-                .await;
-            }
+        } else {
+            error!("Error : read_notification_rx gave None");
         }
     }
 }

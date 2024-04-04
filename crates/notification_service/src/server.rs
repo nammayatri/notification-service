@@ -61,7 +61,7 @@ pub async fn run_server() -> Result<()> {
             ClientId,
             Option<Sender<Result<NotificationPayload, Status>>>,
         )>,
-    ) = mpsc::channel(10000);
+    ) = mpsc::channel(100000);
 
     let graceful_termination_requested = Arc::new(AtomicBool::new(false));
     let signal = tokio::spawn(async move {

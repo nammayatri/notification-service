@@ -337,3 +337,13 @@ async fn test_time_diff() {
     let new = Utc::now() + Duration::from_secs(30);
     println!("{}", abs_diff_utc_as_sec(old, new) as u32)
 }
+
+#[tokio::test]
+async fn test_while_loop() {
+    let val: Option<bool> = None;
+
+    while let Some(_val) = val {
+        println!("I am possible!");
+    }
+    println!("I am impossible!");
+}
