@@ -35,5 +35,7 @@ in {
     last_known_notification_cache_expiry = 86400,
     reader_delay_seconds = 1,
     retry_delay_seconds = 5,
-    max_shards = +128
+    max_shards = +5,
+    channel_buffer = 100000,
+    request_timeout_seconds = 60
 }

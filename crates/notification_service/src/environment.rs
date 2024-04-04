@@ -10,7 +10,7 @@
 use reqwest::Url;
 use serde::Deserialize;
 use shared::redis::types::{RedisConnectionPool, RedisSettings};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::tools::logger::LoggerConfig;
 
@@ -32,6 +32,8 @@ pub struct AppConfig {
     pub reader_delay_seconds: u64,
     pub retry_delay_seconds: u64,
     pub max_shards: u64,
+    pub channel_buffer: usize,
+    pub request_timeout_seconds: u64,
 }
 
 #[derive(Clone)]
@@ -46,6 +48,8 @@ pub struct AppState {
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub max_shards: u64,
+    pub channel_buffer: usize,
+    pub request_timeout_seconds: Duration,
 }
 
 impl AppState {
@@ -68,6 +72,8 @@ impl AppState {
             grpc_port: app_config.grpc_port,
             http_server_port: app_config.http_server_port,
             max_shards: app_config.max_shards,
+            channel_buffer: app_config.channel_buffer,
+            request_timeout_seconds: Duration::from_secs(app_config.request_timeout_seconds),
         }
     }
 }

@@ -22,6 +22,10 @@ pub async fn read_client_notifications(
     clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
     Shard(shard): &Shard,
 ) -> Result<Vec<(Shard, ClientId, Vec<NotificationData>)>> {
+    if clients_last_seen_notification_id.is_empty() {
+        return Ok(Vec::default());
+    }
+
     let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
         clients_last_seen_notification_id
             .into_iter()
@@ -29,10 +33,6 @@ pub async fn read_client_notifications(
                 (notification_client_key(&client_id, shard), last_entry)
             })
             .unzip();
-
-    if client_stream_keys.is_empty() {
-        return Ok(Vec::default());
-    }
 
     let notifications = redis_pool
         .xread(

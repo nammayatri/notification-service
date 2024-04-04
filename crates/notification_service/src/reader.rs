@@ -216,7 +216,7 @@ async fn client_reciever(
                 );
             }
             None => {
-                error!("[Client Disconnected] : {:?}", client_id);
+                info!("[Client Disconnected] : {:?}", client_id);
                 clients_tx
                     .get_mut(&shard)
                     .and_then(|clients| clients.remove(&client_id));
@@ -236,8 +236,6 @@ async fn client_reciever(
 async fn read_and_process_notification(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: &mut ReaderMap,
-    delay: Duration,
-    _last_known_notification_cache_expiry: u32,
 ) {
     let read_client_notifications_batch_task_result =
         read_client_notifications_parallely_in_batch_task(&redis_pool.clone(), clients_tx, false)
@@ -273,7 +271,7 @@ async fn read_and_process_notification(
                         *client_last_seen_stream_id = Some(notification.stream_id);
                     }
                     Err(err) => {
-                        error!("[Send Failed] : {}", err);
+                        info!("[Send Failed] : {}", err);
                     }
                 }
             } else {
@@ -284,7 +282,6 @@ async fn read_and_process_notification(
             }
         }
     }
-    tokio::time::sleep(delay).await;
 }
 
 async fn retry_notifications(
@@ -336,7 +333,7 @@ async fn retry_notifications(
                     Ok(true) => RETRIED_NOTIFICATIONS.inc(),
                     Ok(false) => (),
                     Err(err) => {
-                        error!("[Send Failed] : {}", err);
+                        info!("[Send Failed] : {}", err);
                     }
                 }
             } else {
@@ -347,7 +344,6 @@ async fn retry_notifications(
             }
         }
     }
-    tokio::time::sleep(delay).await;
 }
 
 async fn graceful_termination_of_connected_clients(
@@ -404,8 +400,6 @@ pub async fn run_notification_reader(
                 read_and_process_notification(
                     redis_pool.clone(),
                     &mut clients_tx,
-                    Duration::from_secs(reader_delay_seconds),
-                    last_known_notification_cache_expiry,
                 ).await;
             },
             _ = retry_notifications_task_timer.tick() => {

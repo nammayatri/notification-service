@@ -31,7 +31,7 @@ use chrono::Utc;
 use futures::Stream;
 use reqwest::Url;
 use shared::redis::types::RedisConnectionPool;
-use std::{env::var, pin::Pin, time::Duration};
+use std::{env::var, pin::Pin};
 use tokio::{
     sync::mpsc::{self, Sender},
     time::{timeout, Instant},
@@ -105,18 +105,14 @@ impl Notification for NotificationService {
         let ClientId(client_id) = if var("DEV").is_ok() {
             ClientId(token.to_owned())
         } else {
-            timeout(
-                Duration::from_secs(30),
-                get_client_id_from_bpp_authentication(
-                    &self.app_state.redis_pool,
-                    &token,
-                    &self.app_state.auth_url,
-                    &self.app_state.auth_api_key,
-                    &self.app_state.auth_token_expiry,
-                ),
+            get_client_id_from_bpp_authentication(
+                &self.app_state.redis_pool,
+                &token,
+                &self.app_state.auth_url,
+                &self.app_state.auth_api_key,
+                &self.app_state.auth_token_expiry,
             )
             .await
-            .map_err(|_| AppError::Timeout)?
             .map_err(|err| {
                 AppError::InternalError(format!("Internal Authentication Failed : {:?}", err))
             })?
@@ -124,12 +120,13 @@ impl Notification for NotificationService {
 
         info!("Connection Successful - ClientId : {client_id} - token : {token}");
 
-        let (client_tx, client_rx) = mpsc::channel(100000);
+        let (client_tx, client_rx) = mpsc::channel(self.app_state.channel_buffer);
 
-        let (redis_pool, read_notification_tx, max_shards) = (
+        let (redis_pool, read_notification_tx, max_shards, request_timeout_seconds) = (
             self.app_state.redis_pool.clone(),
             self.read_notification_tx.clone(),
             self.app_state.max_shards,
+            self.app_state.request_timeout_seconds,
         );
 
         tokio::spawn(async move {
@@ -147,7 +144,7 @@ impl Notification for NotificationService {
             let (read_notification_tx_clone, client_id_clone) =
                 (read_notification_tx.clone(), client_id.clone());
 
-            if let Err(err) = timeout(Duration::from_secs(200), async move {
+            if let Err(err) = timeout(request_timeout_seconds, async move {
                 let mut stream = request.into_inner();
 
                 loop {
@@ -189,7 +186,7 @@ impl Notification for NotificationService {
                             }
                         }
                         Ok(None) => {
-                            error!("Client ({}) Disconnected", client_id);
+                            info!("Client ({}) Disconnected", client_id);
                             notification_client_connection_duration!("DISCONNECTED", start_time);
                             if let Err(err) = read_notification_tx
                                 .clone()
@@ -204,7 +201,7 @@ impl Notification for NotificationService {
                             break;
                         }
                         Err(err) => {
-                            error!("Client ({}) Disconnected : {}", client_id, err);
+                            info!("Client ({}) Disconnected : {}", client_id, err);
                             notification_client_connection_duration!("DISCONNECTED", start_time);
                             if let Err(err) = read_notification_tx
                                 .clone()

@@ -61,7 +61,7 @@ pub async fn run_server() -> Result<()> {
             ClientId,
             Option<Sender<Result<NotificationPayload, Status>>>,
         )>,
-    ) = mpsc::channel(100000);
+    ) = mpsc::channel(app_state.channel_buffer);
 
     let graceful_termination_requested = Arc::new(AtomicBool::new(false));
     let signal = tokio::spawn(async move {
@@ -109,16 +109,19 @@ pub async fn run_server() -> Result<()> {
 
     tokio::select! {
         res = http_server => {
+            error!("[HTTP_SERVER_ENDED] : {:?}", res);
             Err(anyhow!("[HTTP_SERVER] : {:?}", res))
         }
         res = grpc_server => {
+            error!("[GRPC_SERVER_ENDED] : {:?}", res);
             Err(anyhow!("[GRPC_SERVER] : {:?}", res))
         }
         res = read_notification_thread => {
+            error!("[READ_NOTIFICATION_ENDED] : {:?}", res);
             Err(anyhow!("[READ_NOTIFICATION] : {:?}", res))
         }
         res = signal => {
-            error!("[GRACEFULL_TERMINATION] : {:?}", res);
+            info!("[GRACEFULL_TERMINATION] : {:?}", res);
             graceful_termination_requested.store(true, Ordering::Relaxed);
             sleep(Duration::from_secs(60)).await;
             Ok(())
