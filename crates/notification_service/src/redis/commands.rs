@@ -7,10 +7,7 @@
 */
 
 use super::{keys::*, types::NotificationData};
-use crate::common::{
-    types::*,
-    utils::{abs_diff_utc_as_sec, decode_stream},
-};
+use crate::common::{types::*, utils::decode_stream};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -99,14 +96,14 @@ pub async fn set_notification_stream_id(
     redis_pool: &RedisConnectionPool,
     notification_id: &str,
     notification_stream_id: &str,
-    notification_ttl: DateTime<Utc>,
+    _notification_ttl: DateTime<Utc>,
 ) -> Result<(), RedisError> {
-    let now = Utc::now();
+    let _now = Utc::now();
     redis_pool
         .set_key_as_str(
             &notification_stream_key(notification_id),
             notification_stream_id,
-            2 * abs_diff_utc_as_sec(now, notification_ttl) as u32,
+            60, // 2 * abs_diff_utc_as_sec(min(now, notification_ttl), max(now, notification_ttl)) as u32,
         )
         .await?;
     Ok(())

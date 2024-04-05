@@ -14,6 +14,7 @@ use crate::{
             transform_notification_data_to_payload,
         },
     },
+    measure_latency_duration,
     redis::{
         commands::{
             clean_up_notification, get_client_last_sent_notification, read_client_notifications,
@@ -23,7 +24,8 @@ use crate::{
         types::NotificationData,
     },
     tools::prometheus::{
-        CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+        CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION, RETRIED_NOTIFICATIONS,
+        TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
@@ -41,6 +43,7 @@ use std::{
 use tokio::{sync::mpsc::Receiver, time::interval};
 use tracing::*;
 
+#[macros::measure_duration]
 async fn _store_client_last_sent_notification_context(
     redis_pool: Arc<RedisConnectionPool>,
     client_id: String,
@@ -57,6 +60,7 @@ async fn _store_client_last_sent_notification_context(
     .map_err(|err| error!("Error in set_client_last_sent_notification : {}", err));
 }
 
+#[macros::measure_duration]
 async fn store_clients_last_sent_notification_context(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: &ReaderMap,
@@ -72,6 +76,7 @@ async fn store_clients_last_sent_notification_context(
 }
 
 #[allow(clippy::type_complexity)]
+#[macros::measure_duration]
 async fn get_clients_last_seen_notification_id(
     clients_tx: &ReaderMap,
 ) -> Vec<(ClientId, StreamEntry)> {
@@ -89,11 +94,19 @@ async fn get_clients_last_seen_notification_id(
         .collect()
 }
 
+#[macros::measure_duration]
 async fn send_notification(
     client_tx: &ClientTx,
     notification: NotificationData,
     redis_pool: &RedisConnectionPool,
+    client_last_seen_stream_id: &mut Option<StreamEntry>,
 ) -> Result<()> {
+    client_tx
+        .send(Ok(transform_notification_data_to_payload(
+            notification.clone(),
+        )))
+        .await?;
+
     let _ = set_notification_stream_id(
         redis_pool,
         &notification.id.inner(),
@@ -102,14 +115,12 @@ async fn send_notification(
     )
     .await
     .map_err(|err| error!("Error in set_notification_stream_id : {:?}", err));
-    client_tx
-        .send(Ok(transform_notification_data_to_payload(
-            notification.clone(),
-        )))
-        .await?;
+    TOTAL_NOTIFICATIONS.inc();
+    *client_last_seen_stream_id = Some(notification.stream_id);
     Ok(())
 }
 
+#[macros::measure_duration]
 async fn clear_expired_notification(
     redis_pool: &RedisConnectionPool,
     shard: &Shard,
@@ -129,13 +140,14 @@ async fn clear_expired_notification(
     .map_err(|err| error!("Error in clean_up_notification : {}", err));
 }
 
+#[macros::measure_duration]
 async fn retry_notification_if_eligible(
     client_tx: &ClientTx,
     client_id: &str,
     client_last_seen_stream_id: &Option<StreamEntry>,
     retry_delay_seconds: u64,
     notification: NotificationData,
-) -> Result<bool> {
+) -> Result<()> {
     if let Some(client_last_seen_stream_id) = client_last_seen_stream_id {
         // Older Sent Notifications to be sent again for retry
         if is_stream_id_less_or_eq(
@@ -152,13 +164,14 @@ async fn retry_notification_if_eligible(
                 client_tx
                     .send(Ok(transform_notification_data_to_payload(notification)))
                     .await?;
-                return Ok(true);
+                RETRIED_NOTIFICATIONS.inc();
             }
         }
     }
-    Ok(false)
+    Ok(())
 }
 
+#[macros::measure_duration]
 async fn read_client_notifications_parallely_in_batch_task(
     redis_pool: &RedisConnectionPool,
     clients_tx: &ReaderMap,
@@ -195,6 +208,7 @@ async fn read_client_notifications_parallely_in_batch_task(
         .collect()
 }
 
+#[macros::measure_duration]
 async fn client_reciever(
     notification_rx: Option<(ClientId, Option<ClientTx>)>,
     redis_pool: Arc<RedisConnectionPool>,
@@ -216,7 +230,7 @@ async fn client_reciever(
                 );
             }
             None => {
-                info!("[Client Disconnected] : {:?}", client_id);
+                warn!("[Client Disconnected] : {:?}", client_id);
                 clients_tx
                     .get_mut(&shard)
                     .and_then(|clients| clients.remove(&client_id));
@@ -233,6 +247,7 @@ async fn client_reciever(
     }
 }
 
+#[macros::measure_duration]
 async fn read_and_process_notification(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: &mut ReaderMap,
@@ -253,26 +268,36 @@ async fn read_and_process_notification(
 
         for notification in notifications {
             if notification.ttl < Utc::now() {
-                clear_expired_notification(
-                    &Arc::clone(&redis_pool),
-                    &shard,
-                    &client_id,
-                    &notification.id,
-                    &notification.stream_id,
-                )
-                .await;
+                let (redis_pool, shard, client_id, notification_id, notification_stream_id) = (
+                    redis_pool.clone(),
+                    shard.clone(),
+                    client_id.clone(),
+                    notification.id.clone(),
+                    notification.stream_id.clone(),
+                );
+                tokio::spawn(async move {
+                    clear_expired_notification(
+                        &Arc::clone(&redis_pool),
+                        &shard.clone(),
+                        &client_id,
+                        &notification_id,
+                        &notification_stream_id,
+                    )
+                    .await;
+                });
             } else if let Some((client_tx, ref mut client_last_seen_stream_id)) = clients_tx
                 .get_mut(&shard)
                 .and_then(|clients| clients.get_mut(&ClientId(client_id.to_owned())))
             {
-                match send_notification(client_tx, notification.to_owned(), &redis_pool).await {
-                    Ok(_) => {
-                        TOTAL_NOTIFICATIONS.inc();
-                        *client_last_seen_stream_id = Some(notification.stream_id);
-                    }
-                    Err(err) => {
-                        info!("[Send Failed] : {}", err);
-                    }
+                if let Err(err) = send_notification(
+                    client_tx,
+                    notification.to_owned(),
+                    &redis_pool,
+                    client_last_seen_stream_id,
+                )
+                .await
+                {
+                    warn!("[Send Failed] : {}", err);
                 }
             } else {
                 warn!(
@@ -284,6 +309,7 @@ async fn read_and_process_notification(
     }
 }
 
+#[macros::measure_duration]
 async fn retry_notifications(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: &mut ReaderMap,
@@ -309,19 +335,28 @@ async fn retry_notifications(
 
         for notification in notifications {
             if notification.ttl < Utc::now() {
-                clear_expired_notification(
-                    &Arc::clone(&redis_pool),
-                    &shard,
-                    &client_id,
-                    &notification.id,
-                    &notification.stream_id,
-                )
-                .await;
+                let (redis_pool, shard, client_id, notification_id, notification_stream_id) = (
+                    redis_pool.clone(),
+                    shard.clone(),
+                    client_id.clone(),
+                    notification.id.clone(),
+                    notification.stream_id.clone(),
+                );
+                tokio::spawn(async move {
+                    clear_expired_notification(
+                        &Arc::clone(&redis_pool),
+                        &shard.clone(),
+                        &client_id,
+                        &notification_id,
+                        &notification_stream_id,
+                    )
+                    .await;
+                });
             } else if let Some((client_tx, client_last_seen_stream_id)) = clients_tx
                 .get_mut(&shard)
                 .and_then(|clients| clients.get_mut(&ClientId(client_id.to_owned())))
             {
-                match retry_notification_if_eligible(
+                if let Err(err) = retry_notification_if_eligible(
                     client_tx,
                     &client_id,
                     client_last_seen_stream_id,
@@ -330,11 +365,7 @@ async fn retry_notifications(
                 )
                 .await
                 {
-                    Ok(true) => RETRIED_NOTIFICATIONS.inc(),
-                    Ok(false) => (),
-                    Err(err) => {
-                        info!("[Send Failed] : {}", err);
-                    }
+                    warn!("[Send Failed] : {}", err);
                 }
             } else {
                 warn!(

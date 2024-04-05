@@ -12,7 +12,7 @@ use crate::{
         utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
     },
     environment::AppState,
-    notification_client_connection_duration, notification_latency,
+    measure_latency_duration, notification_client_connection_duration, notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
     redis::commands::{
@@ -21,7 +21,8 @@ use crate::{
     tools::{
         error::AppError,
         prometheus::{
-            DELIVERED_NOTIFICATIONS, NOTIFICATION_CLIENT_CONNECTION_DURATION, NOTIFICATION_LATENCY,
+            DELIVERED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_CLIENT_CONNECTION_DURATION,
+            NOTIFICATION_LATENCY,
         },
     },
     NotificationAck, NotificationPayload,
@@ -130,6 +131,7 @@ impl Notification for NotificationService {
         );
 
         tokio::spawn(async move {
+            let add_client_tx_start_time = Instant::now();
             if let Err(err) = read_notification_tx
                 .clone()
                 .send((ClientId(client_id.to_owned()), Some(client_tx)))
@@ -140,6 +142,7 @@ impl Notification for NotificationService {
                     client_id, err
                 );
             }
+            measure_latency_duration!("add_client_tx", add_client_tx_start_time);
 
             let (read_notification_tx_clone, client_id_clone) =
                 (read_notification_tx.clone(), client_id.clone());
@@ -220,7 +223,7 @@ impl Notification for NotificationService {
             })
             .await
             {
-                error!("Client ({}) Timed Out : {}", client_id_clone, err);
+                info!("Client ({}) Timed Out : {}", client_id_clone, err);
                 notification_client_connection_duration!("TIMED_OUT", start_time);
                 if let Err(err) = read_notification_tx_clone
                     .send((ClientId(client_id_clone.to_owned()), None))

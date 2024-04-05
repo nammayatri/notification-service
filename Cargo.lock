@@ -1446,17 +1446,7 @@ checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=46e6876#46e687694eb651dc51886deb981821c5bf7ca442"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.48",
-]
-
-[[package]]
-name = "macros"
-version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=ae40ec1#ae40ec1963d37c7eca76f77d2c34c62c208399f3"
+source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=21ff7e2#21ff7e2687c3bdd9c05f66474188d772b5bf7753"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1617,7 +1607,7 @@ dependencies = [
  "http-body",
  "hyper",
  "itertools 0.12.0",
- "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=ae40ec1)",
+ "macros",
  "once_cell",
  "package",
  "pin-project",
@@ -1632,7 +1622,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha256",
- "shared 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=ae40ec1)",
+ "shared",
  "strum",
  "strum_macros",
  "thiserror",
@@ -2477,41 +2467,14 @@ dependencies = [
 [[package]]
 name = "shared"
 version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=46e6876#46e687694eb651dc51886deb981821c5bf7ca442"
+source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=21ff7e2#21ff7e2687c3bdd9c05f66474188d772b5bf7753"
 dependencies = [
  "actix-web",
  "async-trait",
  "error-stack",
  "fred",
  "futures",
- "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=46e6876)",
- "once_cell",
- "prometheus",
- "reqwest",
- "rustc-hash",
- "serde",
- "serde_json",
- "strum_macros",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-bunyan-formatter",
- "tracing-log 0.1.4",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "shared"
-version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=ae40ec1#ae40ec1963d37c7eca76f77d2c34c62c208399f3"
-dependencies = [
- "actix-web",
- "async-trait",
- "error-stack",
- "fred",
- "futures",
- "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=ae40ec1)",
+ "macros",
  "once_cell",
  "prometheus",
  "reqwest",
@@ -2664,7 +2627,7 @@ dependencies = [
  "futures",
  "notification_service",
  "serde_dhall",
- "shared 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=46e6876)",
+ "shared",
  "tokio",
  "tokio-stream",
  "tonic",

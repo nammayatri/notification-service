@@ -10,6 +10,15 @@
 use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
 use prometheus::{opts, register_histogram_vec, register_int_counter, HistogramVec, IntCounter};
 
+pub static MEASURE_DURATION: once_cell::sync::Lazy<HistogramVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_histogram_vec!(
+            opts!("measure_duration_seconds", "Measure Duration").into(),
+            &["function"]
+        )
+        .expect("Failed to register measure duration metrics")
+    });
+
 pub static NOTIFICATION_CLIENT_CONNECTION_DURATION: once_cell::sync::Lazy<HistogramVec> =
     once_cell::sync::Lazy::new(|| {
         register_histogram_vec!(
@@ -90,6 +99,16 @@ macro_rules! notification_client_connection_duration {
 }
 
 #[macro_export]
+macro_rules! measure_latency_duration {
+    ($function:expr, $start:expr) => {
+        let duration = $start.elapsed().as_secs_f64();
+        MEASURE_DURATION
+            .with_label_values(&[$function])
+            .observe(duration);
+    };
+}
+
+#[macro_export]
 macro_rules! incoming_api {
     ($method:expr, $endpoint:expr, $status:expr, $code:expr, $start:expr) => {
         let duration = $start.elapsed().as_secs_f64();
@@ -152,6 +171,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .endpoint("/metrics")
         .build()
         .expect("Failed to create Prometheus Metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(MEASURE_DURATION.to_owned()))
+        .expect("Failed to register measure duration");
 
     prometheus
         .registry

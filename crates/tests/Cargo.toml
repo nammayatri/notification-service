@@ -12,6 +12,6 @@ serde_dhall = "0.12.1"
 tokio-stream = "0.1"
 tonic = "0.10.2"
 
-shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "46e6876" }
+shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "21ff7e2" }
 notification_service = { version = "0.1.0", path = "../notification_service" }
 uuid = "1.7.0"
