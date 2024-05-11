@@ -74,8 +74,9 @@ async fn connect_client_without_ack() -> anyhow::Result<()> {
     use chrono::Utc;
 
     let mut attempt_count = 0;
+    const MAX_ATTEMPTS: i32 = 20;
 
-    loop {
+    while attempt_count < MAX_ATTEMPTS {
         let result: anyhow::Result<()> = async {
             use std::str::FromStr;
 
@@ -321,10 +322,11 @@ async fn test_delay_measurement() {
 #[tokio::test]
 async fn test_hash_uuid_mod_shards() {
     use notification_service::common::utils::hash_uuid;
+    use std::str::FromStr;
 
     let shards = 128;
-    let uuid = uuid::Uuid::new_v4();
-    println!("{}", hash_uuid(&uuid.to_string()) % shards);
+    let uuid = uuid::Uuid::from_str("f8f68652-c0ec-4d14-8060-2b327d709dca").unwrap();
+    println!("{:?}", hash_uuid(&uuid.to_string()) % shards);
 }
 
 #[tokio::test]
@@ -334,8 +336,8 @@ async fn test_time_diff() {
     use std::time::Duration;
 
     let old = Utc::now();
-    let new = Utc::now() + Duration::from_secs(30);
-    println!("{}", abs_diff_utc_as_sec(old, new) as u32)
+    let new = Utc::now() + Duration::from_secs(30) + Duration::from_millis(1000);
+    println!("{}", abs_diff_utc_as_sec(old, new))
 }
 
 #[tokio::test]
@@ -346,4 +348,25 @@ async fn test_while_loop() {
         println!("I am possible!");
     }
     println!("I am impossible!");
+}
+
+#[tokio::test]
+async fn test_thread_wait_in_loop() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let mut task_handles = vec![];
+
+    for i in 0..100 {
+        let handle = tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(5)).await;
+                println!("Hello from thread : {}", i);
+            }
+        });
+        task_handles.push(handle);
+    }
+
+    // Wait for all tasks to complete
+    let _ = futures::future::join_all(task_handles).await;
 }

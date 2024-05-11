@@ -74,7 +74,6 @@ pub async fn run_server() -> Result<()> {
         read_notification_rx,
         graceful_termination_requested.clone(),
         app_state.redis_pool.clone(),
-        app_state.reader_delay_seconds,
         app_state.retry_delay_seconds,
         app_state.last_known_notification_cache_expiry,
         app_state.max_shards,

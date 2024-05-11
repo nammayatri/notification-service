@@ -127,7 +127,7 @@ macro_rules! notification_latency {
         let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
         NOTIFICATION_LATENCY
             .with_label_values(&[version.as_str()])
-            .observe(duration as f64);
+            .observe(duration);
     };
 }
 

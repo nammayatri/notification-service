@@ -93,8 +93,9 @@ pub fn is_stream_id_less_or_eq(id1: &str, id2: &str) -> bool {
     }
 }
 
-pub fn abs_diff_utc_as_sec(old: DateTime<Utc>, new: DateTime<Utc>) -> u64 {
-    new.signed_duration_since(old).num_seconds().abs_diff(0)
+pub fn abs_diff_utc_as_sec(old: DateTime<Utc>, new: DateTime<Utc>) -> f64 {
+    let duration = new.signed_duration_since(old);
+    duration.num_seconds() as f64 + (duration.num_milliseconds() % 1000) as f64 / 1000.0
 }
 
 pub fn transform_notification_data_to_payload(

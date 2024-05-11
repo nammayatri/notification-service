@@ -29,6 +29,7 @@
           pkgs.protobuf
           pkgs.grpcurl
           pkgs.redis
+          pkgs.k6
         ];
         # needed to dynamically link rdkafka
         CARGO_FEATURE_DYNAMIC_LINKING = 1;

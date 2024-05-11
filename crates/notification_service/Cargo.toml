@@ -54,6 +54,7 @@ macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "21ff7e
 shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "21ff7e2" }
 itertools = "0.12.0"
 regex = "1.10.3"
+dashmap = "5.5.3"
 
 [build-dependencies]
 tonic-build = "0.10.2"
