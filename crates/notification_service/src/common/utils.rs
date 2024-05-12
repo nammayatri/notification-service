@@ -127,8 +127,8 @@ pub fn get_timestamp_from_stream_id(stream_id: &str) -> Timestamp {
         .unwrap_or_else(|| Timestamp(Utc::now()))
 }
 
-pub fn hash_uuid(uuid_str: &str) -> u64 {
+pub fn hash_uuid(uuid_str: &str) -> u128 {
     let uuid = Uuid::from_str(uuid_str).unwrap_or_default();
     let (word1, word2) = uuid.as_u64_pair();
-    word1 + word2
+    word1 as u128 + word2 as u128
 }

@@ -219,7 +219,7 @@ async fn client_reciever_looper(
     loop {
         let start_time = Instant::now();
         if let Some((client_id, client_tx)) = read_notification_rx.recv().await {
-            let Shard(shard) = Shard(hash_uuid(&client_id.inner()) % max_shards);
+            let Shard(shard) = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
             match client_tx {
                 Some(client_tx) => {
                     info!("[Client Connected] : {:?}", client_id);
@@ -298,7 +298,7 @@ async fn read_and_process_notification(
     for (shard, ClientId(client_id), notifications) in
         read_client_notifications_batch_task_result.into_iter()
     {
-        debug!(
+        warn!(
             "[Notification_Shard_{}_ClientId-{}] => {:?}",
             shard.inner(),
             client_id,

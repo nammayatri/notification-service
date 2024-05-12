@@ -281,3 +281,85 @@ To connect to GRPC server use below curl command in `nix develop` shell :
 ```
 grpcurl -plaintext -d '{"id": "1234567890-0","created_at":"2024-01-21T13:45:38.057846262Z"}' -import-path ./crates/notification_service/protos -proto notification_service.proto -H "token: 27da7b7e-dd80-4dfe-9f66-4e961a96e99e" localhost:50051 notification_service.Notification/StreamPayload
 ```
+
+## Loadtest
+
+To loadtest follow the below intstructions :
+
+1. To get eligible driver tokens and mobile numbers, run the below sql query.
+```
+SELECT
+  p.merchant_id,
+  moc.city,
+  v.variant,
+  ARRAY_AGG(r.token) AS tokens,
+  ARRAY_AGG(p.unencrypted_mobile_number) AS mobile_numbers
+FROM
+  atlas_driver_offer_bpp.person p
+  JOIN atlas_driver_offer_bpp.vehicle v ON p.id = v.driver_id
+  JOIN atlas_driver_offer_bpp.registration_token r ON r.entity_id = p.id
+  JOIN atlas_driver_offer_bpp.merchant_operating_city moc ON moc.id = p.merchant_operating_city_id
+WHERE
+  p.unencrypted_mobile_number IS NOT NULL
+  AND p.id IN (
+    SELECT
+      driver_id
+    FROM
+      atlas_driver_offer_bpp.driver_information
+    WHERE
+      enabled = true
+      AND auto_pay_status = 'ACTIVE'
+      AND subscribed = true
+  )
+GROUP BY
+  p.merchant_id,
+  moc.city,
+  v.variant;
+```
+2. After running loadtest we can tally the count of total notifications with search request for drivers entries creation.
+```
+select
+  r.token,
+  d.driver_id,
+  count(*)
+from
+  atlas_driver_offer_bpp.search_request_for_driver as d
+  join atlas_driver_offer_bpp.registration_token as r on r.entity_id = d.driver_id
+where
+  d.search_request_id IN (
+    select
+      id
+    from
+      atlas_driver_offer_bpp.search_request
+    where
+      transaction_id IN (
+        '7ef6e807-2547-4fc5-a4bd-b489987a768f',
+        'e6965e66-71ef-43e4-9a0c-952735afb75f',
+        '76302199-ac7e-43f1-a939-0bb242c473b6',
+        '49a8daea-8185-4657-b69c-cd8c9c99a25a',
+        'b535830f-a9f8-4eb4-97d8-04a2c9e17f85'
+      )
+  )
+  and d.driver_id IN (
+    select
+      id
+    from
+      atlas_driver_offer_bpp.person
+    where
+      unencrypted_mobile_number IN (
+        '9642420000',
+        '9876544447',
+        '9876544457',
+        '9344676990',
+        '9876544449',
+        '8123456780',
+        '8123456789',
+        '9491839513',
+        '9876544448',
+        '9876544459'
+      )
+  )
+group by
+  d.driver_id,
+  r.token;
+```
