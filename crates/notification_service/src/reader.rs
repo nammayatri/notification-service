@@ -103,7 +103,6 @@ async fn send_notification(
     client_tx: &ClientTx,
     notification: NotificationData,
     redis_pool: &RedisConnectionPool,
-    client_last_seen_stream_id: &mut Option<StreamEntry>,
 ) -> Result<()> {
     client_tx
         .send(Ok(transform_notification_data_to_payload(
@@ -120,7 +119,6 @@ async fn send_notification(
     .await
     .map_err(|err| error!("Error in set_notification_stream_id : {:?}", err));
     TOTAL_NOTIFICATIONS.inc();
-    *client_last_seen_stream_id = Some(notification.stream_id);
     Ok(())
 }
 
@@ -187,9 +185,8 @@ async fn read_client_notifications_parallely_in_batch_task(
         .map(|(shard, clients)| {
             let shard = Shard(shard as u64);
             async move {
-                let clients_last_seen_notification_id = clients
-                    .read()
-                    .await
+                let clients_read_lock = clients.read().await;
+                let clients_last_seen_notification_id = clients_read_lock
                     .iter()
                     .map(|(client_id, (_, last_seen_stream_id))| {
                         let stream_id = if read_stream_from_beginning {
@@ -200,6 +197,7 @@ async fn read_client_notifications_parallely_in_batch_task(
                         (client_id.clone(), stream_id)
                     })
                     .collect();
+                drop(clients_read_lock);
 
                 read_client_notifications(redis_pool, clients_last_seen_notification_id, &shard)
                     .await
@@ -241,13 +239,20 @@ async fn client_reciever_looper(
                 None => {
                     warn!("[Client Disconnected] : {:?}", client_id);
 
-                    if let Some((_, Some(last_read_notification_id))) = clients_tx
+                    let last_read_notification_id = match clients_tx
                         .get(shard as usize)
                         .unwrap()
                         .read()
                         .await
                         .get(&client_id)
                     {
+                        Some((_, Some(last_read_notification_id))) => {
+                            Some(last_read_notification_id.to_owned())
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(last_read_notification_id) = last_read_notification_id {
                         store_client_last_sent_notification_context(
                             redis_pool.clone(),
                             client_id.inner(),
@@ -319,28 +324,44 @@ async fn read_and_process_notification(
                     )
                     .await;
                 });
-            } else if let Some((client_tx, ref mut client_last_seen_stream_id)) = clients_tx
-                .get(shard.inner() as usize)
-                .expect("This error is impossible!")
-                .write()
-                .await
-                .get_mut(&ClientId(client_id.to_owned()))
-            {
-                if let Err(err) = send_notification(
-                    client_tx,
-                    notification.to_owned(),
-                    &redis_pool,
-                    client_last_seen_stream_id,
-                )
-                .await
-                {
-                    warn!("[Send Failed] : {}", err);
-                }
             } else {
-                warn!(
-                    "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                    client_id
-                );
+                let client_tx = clients_tx
+                    .get(shard.inner() as usize)
+                    .expect("This error is impossible!")
+                    .read()
+                    .await
+                    .get(&ClientId(client_id.to_owned()))
+                    .map(|(client_tx, _)| client_tx.clone());
+
+                if let Some(client_tx) = client_tx {
+                    match send_notification(&client_tx, notification.to_owned(), &redis_pool).await
+                    {
+                        Ok(_) => {
+                            if let Some((_, client_last_seen_stream_id)) = clients_tx
+                                .get(shard.inner() as usize)
+                                .expect("This error is impossible!")
+                                .write()
+                                .await
+                                .get_mut(&ClientId(client_id.to_owned()))
+                            {
+                                *client_last_seen_stream_id = Some(notification.stream_id);
+                            } else {
+                                warn!(
+                                    "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                                    client_id
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            warn!("[Send Failed] : {}", err);
+                        }
+                    }
+                } else {
+                    warn!(
+                        "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                        client_id
+                    );
+                }
             }
         }
     }
@@ -398,29 +419,37 @@ async fn retry_notifications(
                     )
                     .await;
                 });
-            } else if let Some((client_tx, client_last_seen_stream_id)) = clients_tx
-                .get(shard.inner() as usize)
-                .unwrap()
-                .write()
-                .await
-                .get_mut(&ClientId(client_id.to_owned()))
-            {
-                if let Err(err) = retry_notification_if_eligible(
-                    client_tx,
-                    &client_id,
-                    client_last_seen_stream_id,
-                    delay.as_secs(),
-                    notification,
-                )
-                .await
-                {
-                    warn!("[Send Failed] : {}", err);
-                }
             } else {
-                warn!(
-                    "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                    client_id
-                );
+                let client_tx_and_last_seen_notification_id = clients_tx
+                    .get(shard.inner() as usize)
+                    .expect("This error is impossible!")
+                    .read()
+                    .await
+                    .get(&ClientId(client_id.to_owned()))
+                    .map(|(client_tx, client_last_seen_stream_id)| {
+                        (client_tx.clone(), client_last_seen_stream_id.clone())
+                    });
+
+                if let Some((client_tx, client_last_seen_stream_id)) =
+                    client_tx_and_last_seen_notification_id
+                {
+                    if let Err(err) = retry_notification_if_eligible(
+                        &client_tx,
+                        &client_id,
+                        &client_last_seen_stream_id,
+                        delay.as_secs(),
+                        notification,
+                    )
+                    .await
+                    {
+                        warn!("[Send Failed] : {}", err);
+                    }
+                } else {
+                    warn!(
+                        "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                        client_id
+                    );
+                }
             }
         }
     }
