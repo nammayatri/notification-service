@@ -316,7 +316,7 @@ GROUP BY
   moc.city,
   v.variant;
 ```
-2. After running loadtest we can tally the count of total notifications with search request for drivers entries creation.
+2. After running loadtest `loadtest_ridebooking_flow` we can tally the count of total notifications with search request for drivers entries creation.
 ```
 select
   r.token,
@@ -362,4 +362,26 @@ where
 group by
   d.driver_id,
   r.token;
+```
+3. To loadtest for connections we can generate redis stream commands using `loadtest_xadd_key_generator` and run them in redis. Once that is done we can run `loadtest_connections` to run load test for concurrent connections. We can get driver ids and tokens using below query.
+```
+SELECT
+  p.merchant_id,
+  moc.city,
+  v.variant,
+  ARRAY_AGG(DISTINCT(p.id)) AS driver_ids,
+  ARRAY_AGG(DISTINCT(r.token)) AS tokens,
+  ARRAY_AGG(DISTINCT(p.unencrypted_mobile_number)) AS mobile_numbers
+FROM
+  atlas_driver_offer_bpp.person p
+  JOIN atlas_driver_offer_bpp.vehicle v ON p.id = v.driver_id
+  JOIN atlas_driver_offer_bpp.registration_token r ON r.entity_id = p.id
+  JOIN atlas_driver_offer_bpp.merchant_operating_city moc ON moc.id = p.merchant_operating_city_id
+WHERE
+  p.unencrypted_mobile_number IS NOT NULL
+  AND r.token_expiry >= 365 AND r.created_at >= CURRENT_DATE - INTERVAL '364 day'
+GROUP BY
+  p.merchant_id,
+  moc.city,
+  v.variant;
 ```

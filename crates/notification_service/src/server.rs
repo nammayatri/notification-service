@@ -77,6 +77,7 @@ pub async fn run_server() -> Result<()> {
         app_state.retry_delay_seconds,
         app_state.last_known_notification_cache_expiry,
         app_state.max_shards,
+        app_state.is_acknowledment_required,
     );
 
     let prometheus = prometheus_metrics();

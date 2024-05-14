@@ -33,6 +33,7 @@ pub struct AppConfig {
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: u64,
+    pub is_acknowledment_required: bool,
 }
 
 #[derive(Clone)]
@@ -48,6 +49,7 @@ pub struct AppState {
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: Duration,
+    pub is_acknowledment_required: bool,
 }
 
 impl AppState {
@@ -71,6 +73,7 @@ impl AppState {
             max_shards: app_config.max_shards,
             channel_buffer: app_config.channel_buffer,
             request_timeout_seconds: Duration::from_secs(app_config.request_timeout_seconds),
+            is_acknowledment_required: app_config.is_acknowledment_required,
         }
     }
 }
