@@ -11,5 +11,6 @@ use notification_service::server::run_server;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() -> Result<()> {
+    // console_subscriber::init();
     run_server().await
 }

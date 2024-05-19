@@ -22,16 +22,13 @@ use anyhow::{anyhow, Result};
 use std::{
     env::var,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
 };
 use tokio::{
     signal::unix::{signal, SignalKind},
-    sync::mpsc::{self, Receiver, Sender},
-    time::sleep,
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        oneshot,
+    },
 };
 use tonic::{transport::Server, Status};
 use tracing::*;
@@ -47,6 +44,7 @@ pub async fn run_server() -> Result<()> {
 
     std::panic::set_hook(Box::new(|panic_info| {
         error!("Panic Occured : {:?}", panic_info);
+        panic!("Panic Occured : {:?}", panic_info);
     }));
 
     let app_state = AppState::new(app_config).await;
@@ -63,16 +61,26 @@ pub async fn run_server() -> Result<()> {
         )>,
     ) = mpsc::channel(app_state.channel_buffer);
 
-    let graceful_termination_requested = Arc::new(AtomicBool::new(false));
-    let signal = tokio::spawn(async move {
-        let mut sigterm = signal(SignalKind::terminate()).unwrap();
-        let mut sigint = signal(SignalKind::interrupt()).unwrap();
-        tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} }
+    let (signal_tx, signal_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install signal handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install signal handler");
+        tokio::select! {
+            _ = sigterm.recv() => {
+                error!("SIGTERM received: shutting down");
+                let _ = signal_tx.send(());
+            },
+            _ = sigint.recv() => {
+                error!("SIGINT received: shutting down");
+                let _ = signal_tx.send(());
+            }
+        }
     });
 
     let read_notification_thread = run_notification_reader(
         read_notification_rx,
-        graceful_termination_requested.clone(),
+        signal_rx,
         app_state.redis_pool.clone(),
         app_state.retry_delay_seconds,
         app_state.last_known_notification_cache_expiry,
@@ -119,12 +127,6 @@ pub async fn run_server() -> Result<()> {
         res = read_notification_thread => {
             error!("[READ_NOTIFICATION_ENDED] : {:?}", res);
             Err(anyhow!("[READ_NOTIFICATION] : {:?}", res))
-        }
-        res = signal => {
-            info!("[GRACEFULL_TERMINATION] : {:?}", res);
-            graceful_termination_requested.store(true, Ordering::Relaxed);
-            sleep(Duration::from_secs(60)).await;
-            Ok(())
         }
     }
 }

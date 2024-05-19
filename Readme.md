@@ -262,17 +262,9 @@ Run `nix run nixpkgs#nixci` locally to make sure that the project builds. The CI
 
 ## Profiling
 
-In cargo.toml add :
-
-```
-[profile.dev]
-debug = true
-debug-assertions = false
-
-[profile.release]
-debug = true
-debug-assertions = false
-```
+1. In `crates/notification_service/src/main.rs` add following line in starting for tracing `console_subscriber::init();`.
+2. Comment out `let _guard = setup_tracing(app_config.logger_cfg);` in `crates/notification_service/src/server.rs`.
+3. Instead of `cargo run`. Do, `RUSTFLAGS="--cfg tokio_unstable" cargo run`.
 
 ## Debugging
 

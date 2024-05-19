@@ -96,7 +96,9 @@ pub fn setup_tracing(logger_cfg: LoggerConfig) -> WorkerGuard {
 
         set_global_default(subscriber).expect("Unable to set global tracing subscriber");
     } else {
+        // let console_layer = console_subscriber::spawn();
         let subscriber = Registry::default()
+            // .with(console_layer)
             .with(LevelFilter::from(logger_cfg.level))
             .with(JsonStorageLayer)
             .with(bunyan_console_formatting_layer);

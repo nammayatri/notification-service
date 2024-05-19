@@ -33,15 +33,9 @@ use chrono::Utc;
 use futures::future::join_all;
 use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{mpsc::Receiver, RwLock},
+    sync::{self, RwLock},
     time::{sleep, Instant},
 };
 use tracing::*;
@@ -251,7 +245,7 @@ async fn handle_client_disconnection_or_failure(
 }
 
 async fn client_reciever_looper(
-    mut read_notification_rx: Receiver<(ClientId, Option<ClientTx>)>,
+    mut read_notification_rx: sync::mpsc::Receiver<(ClientId, Option<ClientTx>)>,
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
@@ -290,7 +284,7 @@ async fn client_reciever_looper(
                 }
             }
         } else {
-            panic!("Error : read_notification_rx gave None");
+            error!("Error : read_notification_rx gave None");
         }
         measure_latency_duration!("client_reciever", start_time);
     }
@@ -529,30 +523,9 @@ async fn retry_notifications_looper(
     }
 }
 
-async fn graceful_termination_of_connected_clients(
-    graceful_termination_requested: Arc<AtomicBool>,
-    redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-    last_known_notification_cache_expiry: u32,
-) {
-    loop {
-        if graceful_termination_requested.load(Ordering::Relaxed) {
-            error!("[Graceful Shutting Down] => Storing following clients last read notification in redis : {:?}", clients_tx);
-            store_clients_last_sent_notification_context(
-                redis_pool.clone(),
-                clients_tx.clone(),
-                last_known_notification_cache_expiry,
-            )
-            .await;
-            break;
-        }
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
-}
-
 pub async fn run_notification_reader(
-    read_notification_rx: Receiver<(ClientId, Option<ClientTx>)>,
-    graceful_termination_requested: Arc<AtomicBool>,
+    read_notification_rx: sync::mpsc::Receiver<(ClientId, Option<ClientTx>)>,
+    graceful_termination_signal_rx: sync::oneshot::Receiver<()>,
     redis_pool: Arc<RedisConnectionPool>,
     retry_delay_seconds: u64,
     last_known_notification_cache_expiry: u32,
@@ -588,13 +561,6 @@ pub async fn run_notification_reader(
         Duration::from_secs(retry_delay_seconds),
     ));
 
-    let graceful_termination_task = tokio::spawn(graceful_termination_of_connected_clients(
-        graceful_termination_requested,
-        redis_pool,
-        clients_tx,
-        last_known_notification_cache_expiry,
-    ));
-
     tokio::select!(
         res = rx_task => {
             error!("[CLIENT_RECIEVER_TASK] : {:?}", res);
@@ -605,8 +571,14 @@ pub async fn run_notification_reader(
         res = retry_notifications_task => {
             error!("[READ_PROCESS_NOTIFICATION_TASK] : {:?}", res);
         },
-        _ = graceful_termination_task => {
-            error!("[GRACEFUL_TERMINATION_TASK]");
+        _ = graceful_termination_signal_rx => {
+            error!("[Graceful Shutting Down] => Storing following clients last read notification in redis : {:?}", clients_tx);
+            store_clients_last_sent_notification_context(
+                redis_pool.clone(),
+                clients_tx.clone(),
+                last_known_notification_cache_expiry,
+            )
+            .await;
         }
     );
 }
