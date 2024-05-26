@@ -205,8 +205,6 @@ mod tests {
 
         loop {
             let result: anyhow::Result<()> = async {
-                use std::str::FromStr;
-
                 let mut client =
                     notification_service::notification_client::NotificationClient::connect(
                         "http://127.0.0.1:50051",

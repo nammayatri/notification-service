@@ -8,16 +8,21 @@
 
 use std::{cmp::Ordering, str::FromStr};
 
-use crate::{redis::types::NotificationData, tools::error::AppError, Entity, NotificationPayload};
+use crate::{
+    measure_latency_duration, redis::types::NotificationData, tools::error::AppError,
+    tools::prometheus::MEASURE_DURATION, Entity, NotificationPayload,
+};
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use tracing::*;
 use uuid::Uuid;
 
 use super::types::Timestamp;
 
+#[macros::measure_duration]
 pub fn decode_nested_json<T: DeserializeOwned>(payload: Vec<(String, String)>) -> Result<T> {
     let mut json_obj = json!({});
     for (key, value) in payload {
@@ -50,6 +55,7 @@ pub fn decode_nested_json<T: DeserializeOwned>(payload: Vec<(String, String)>) -
     Ok(payload)
 }
 
+#[macros::measure_duration]
 pub fn decode_stream<T>(
     notifications: FxHashMap<String, Vec<Vec<(String, String)>>>,
 ) -> Result<FxHashMap<String, Vec<T>>>
@@ -72,6 +78,7 @@ where
     Ok(result)
 }
 
+#[macros::measure_duration]
 pub fn is_stream_id_less_or_eq(id1: &str, id2: &str) -> bool {
     // Split the stream IDs into timestamp and sequence parts
     let parts1: Vec<&str> = id1.split('-').collect();
@@ -93,11 +100,13 @@ pub fn is_stream_id_less_or_eq(id1: &str, id2: &str) -> bool {
     }
 }
 
+#[macros::measure_duration]
 pub fn abs_diff_utc_as_sec(old: DateTime<Utc>, new: DateTime<Utc>) -> f64 {
     let duration = new.signed_duration_since(old);
     duration.num_seconds() as f64 + (duration.num_milliseconds() % 1000) as f64 / 1000.0
 }
 
+#[macros::measure_duration]
 pub fn transform_notification_data_to_payload(
     notification: NotificationData,
 ) -> NotificationPayload {
@@ -127,6 +136,7 @@ pub fn get_timestamp_from_stream_id(stream_id: &str) -> Timestamp {
         .unwrap_or_else(|| Timestamp(Utc::now()))
 }
 
+#[macros::measure_duration]
 pub fn hash_uuid(uuid_str: &str) -> u128 {
     let uuid = Uuid::from_str(uuid_str).unwrap_or_default();
     let (word1, word2) = uuid.as_u64_pair();

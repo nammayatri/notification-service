@@ -7,13 +7,18 @@
 */
 
 use super::{keys::*, types::NotificationData};
-use crate::common::{types::*, utils::decode_stream};
+use crate::{
+    common::{types::*, utils::decode_stream},
+    measure_latency_duration,
+    tools::prometheus::MEASURE_DURATION,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use shared::redis::{error::RedisError, types::RedisConnectionPool};
 use tracing::*;
 
+#[macros::measure_duration]
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
     clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
@@ -70,6 +75,7 @@ pub async fn read_client_notifications(
     Ok(result)
 }
 
+#[macros::measure_duration]
 pub async fn set_client_id(
     redis_pool: &RedisConnectionPool,
     auth_token_expiry: &u32,
@@ -82,6 +88,7 @@ pub async fn set_client_id(
     Ok(())
 }
 
+#[macros::measure_duration]
 pub async fn get_client_id(
     redis_pool: &RedisConnectionPool,
     token: &str,
@@ -92,6 +99,7 @@ pub async fn get_client_id(
         .map(ClientId))
 }
 
+#[macros::measure_duration]
 pub async fn set_notification_stream_id(
     redis_pool: &RedisConnectionPool,
     notification_id: &str,
@@ -109,6 +117,7 @@ pub async fn set_notification_stream_id(
     Ok(())
 }
 
+#[macros::measure_duration]
 pub async fn get_notification_stream_id(
     redis_pool: &RedisConnectionPool,
     notification_id: &str,
@@ -119,6 +128,7 @@ pub async fn get_notification_stream_id(
         .map(StreamEntry))
 }
 
+#[macros::measure_duration]
 pub async fn clean_up_notification(
     redis_pool: &RedisConnectionPool,
     client_id: &str,
@@ -138,6 +148,7 @@ pub async fn clean_up_notification(
     Ok(())
 }
 
+#[macros::measure_duration]
 pub async fn set_client_last_sent_notification(
     redis_pool: &RedisConnectionPool,
     client_id: String,
@@ -154,6 +165,7 @@ pub async fn set_client_last_sent_notification(
     Ok(())
 }
 
+#[macros::measure_duration]
 pub async fn set_clients_last_sent_notification(
     redis_pool: &RedisConnectionPool,
     clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
@@ -173,6 +185,7 @@ pub async fn set_clients_last_sent_notification(
     Ok(())
 }
 
+#[macros::measure_duration]
 pub async fn get_client_last_sent_notification(
     redis_pool: &RedisConnectionPool,
     ClientId(client_id): &ClientId,

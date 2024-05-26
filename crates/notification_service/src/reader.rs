@@ -36,7 +36,7 @@ use shared::redis::types::RedisConnectionPool;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::{self, RwLock},
-    time::{sleep, Instant},
+    time::sleep,
 };
 use tracing::*;
 
@@ -203,6 +203,7 @@ async fn read_client_notifications_parallely_in_batch_task(
     results.into_iter().flatten().flatten().collect()
 }
 
+#[macros::measure_duration]
 async fn handle_client_disconnection_or_failure(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     redis_pool: Arc<RedisConnectionPool>,
@@ -244,6 +245,46 @@ async fn handle_client_disconnection_or_failure(
         .remove(client_id);
 }
 
+#[macros::measure_duration]
+async fn client_reciever(
+    client_id: ClientId,
+    client_tx: Option<ClientTx>,
+    redis_pool: Arc<RedisConnectionPool>,
+    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    max_shards: u64,
+    last_known_notification_cache_expiry: u32,
+) {
+    let Shard(shard) = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
+    match client_tx {
+        Some(client_tx) => {
+            info!("[Client Connected] : {:?}", client_id);
+            CONNECTED_CLIENTS.inc();
+            let last_read_notification_id =
+                get_client_last_sent_notification(&redis_pool, &client_id).await;
+            clients_tx
+                .get(shard as usize)
+                .expect("This error is impossible!")
+                .write()
+                .await
+                .insert(
+                    client_id,
+                    (client_tx, last_read_notification_id.ok().flatten()),
+                );
+        }
+        None => {
+            warn!("[Client Disconnected] : {:?}", client_id);
+            handle_client_disconnection_or_failure(
+                clients_tx.clone(),
+                redis_pool.clone(),
+                last_known_notification_cache_expiry,
+                shard,
+                &client_id,
+            )
+            .await;
+        }
+    }
+}
+
 async fn client_reciever_looper(
     mut read_notification_rx: sync::mpsc::Receiver<(ClientId, Option<ClientTx>)>,
     redis_pool: Arc<RedisConnectionPool>,
@@ -251,43 +292,18 @@ async fn client_reciever_looper(
     max_shards: u64,
     last_known_notification_cache_expiry: u32,
 ) {
-    loop {
-        let start_time = Instant::now();
-        if let Some((client_id, client_tx)) = read_notification_rx.recv().await {
-            let Shard(shard) = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
-            match client_tx {
-                Some(client_tx) => {
-                    info!("[Client Connected] : {:?}", client_id);
-                    CONNECTED_CLIENTS.inc();
-                    let last_read_notification_id =
-                        get_client_last_sent_notification(&redis_pool, &client_id).await;
-                    clients_tx
-                        .get(shard as usize)
-                        .expect("This error is impossible!")
-                        .write()
-                        .await
-                        .insert(
-                            client_id,
-                            (client_tx, last_read_notification_id.ok().flatten()),
-                        );
-                }
-                None => {
-                    warn!("[Client Disconnected] : {:?}", client_id);
-                    handle_client_disconnection_or_failure(
-                        clients_tx.clone(),
-                        redis_pool.clone(),
-                        last_known_notification_cache_expiry,
-                        shard,
-                        &client_id,
-                    )
-                    .await;
-                }
-            }
-        } else {
-            error!("Error : read_notification_rx gave None");
-        }
-        measure_latency_duration!("client_reciever", start_time);
+    while let Some((client_id, client_tx)) = read_notification_rx.recv().await {
+        client_reciever(
+            client_id,
+            client_tx,
+            redis_pool.clone(),
+            clients_tx.clone(),
+            max_shards,
+            last_known_notification_cache_expiry,
+        )
+        .await;
     }
+    error!("Error: read_notification_rx closed");
 }
 
 #[macros::measure_duration]

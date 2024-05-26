@@ -66,6 +66,7 @@ impl NotificationService {
     }
 }
 
+#[macros::measure_duration]
 async fn get_client_id_from_bpp_authentication(
     redis_pool: &RedisConnectionPool,
     token: &str,
