@@ -54,8 +54,8 @@ regex = "1.10.3"
 dashmap = "5.5.3"
 console-subscriber = "0.2.0"
 
-macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "a4ed6da" }
-shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "a4ed6da" }
+macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "6c21852" }
+shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "6c21852" }
 
 [build-dependencies]
 tonic-build = "0.10.2"

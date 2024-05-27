@@ -179,6 +179,8 @@ async fn read_client_notifications_parallely_in_batch_task(
         .map(|(shard, clients)| {
             let shard = Shard(shard as u64);
             async move {
+                let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
+                    tokio::time::Instant::now();
                 let clients_read_lock = clients.read().await;
                 let clients_last_seen_notification_id = clients_read_lock
                     .iter()
@@ -192,6 +194,10 @@ async fn read_client_notifications_parallely_in_batch_task(
                     })
                     .collect();
                 drop(clients_read_lock);
+                measure_latency_duration!(
+                    "read_client_notifications_parallely_in_batch_task_clients_tx_read",
+                    read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
+                );
 
                 read_client_notifications(redis_pool, clients_last_seen_notification_id, &shard)
                     .await
@@ -211,6 +217,8 @@ async fn handle_client_disconnection_or_failure(
     shard: u64,
     client_id: &ClientId,
 ) {
+    let handle_client_disconnection_or_failure_clients_tx_read_start_time =
+        tokio::time::Instant::now();
     let last_read_notification_id = match clients_tx
         .get(shard as usize)
         .unwrap()
@@ -221,6 +229,10 @@ async fn handle_client_disconnection_or_failure(
         Some((_, Some(last_read_notification_id))) => Some(last_read_notification_id.to_owned()),
         _ => None,
     };
+    measure_latency_duration!(
+        "handle_client_disconnection_or_failure_clients_tx_read",
+        handle_client_disconnection_or_failure_clients_tx_read_start_time
+    );
 
     if let Some(last_read_notification_id) = last_read_notification_id {
         store_client_last_sent_notification_context(
@@ -237,12 +249,18 @@ async fn handle_client_disconnection_or_failure(
         )
     }
 
+    let handle_client_disconnection_or_failure_clients_tx_write_start_time =
+        tokio::time::Instant::now();
     clients_tx
         .get(shard as usize)
         .unwrap()
         .write()
         .await
         .remove(client_id);
+    measure_latency_duration!(
+        "handle_client_disconnection_or_failure_clients_tx_write",
+        handle_client_disconnection_or_failure_clients_tx_write_start_time
+    );
 }
 
 #[macros::measure_duration]
@@ -261,6 +279,8 @@ async fn client_reciever(
             CONNECTED_CLIENTS.inc();
             let last_read_notification_id =
                 get_client_last_sent_notification(&redis_pool, &client_id).await;
+
+            let client_reciever_clients_tx_write_start_time = tokio::time::Instant::now();
             clients_tx
                 .get(shard as usize)
                 .expect("This error is impossible!")
@@ -270,6 +290,10 @@ async fn client_reciever(
                     client_id,
                     (client_tx, last_read_notification_id.ok().flatten()),
                 );
+            measure_latency_duration!(
+                "client_reciever_clients_tx_write",
+                client_reciever_clients_tx_write_start_time
+            );
         }
         None => {
             warn!("[Client Disconnected] : {:?}", client_id);
@@ -352,6 +376,8 @@ async fn read_and_process_notification(
                     .await;
                 });
             } else {
+                let read_and_process_notification_clients_tx_read_start_time =
+                    tokio::time::Instant::now();
                 let client_tx = clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
@@ -359,11 +385,17 @@ async fn read_and_process_notification(
                     .await
                     .get(&ClientId(client_id.to_owned()))
                     .map(|(client_tx, _)| client_tx.clone());
+                measure_latency_duration!(
+                    "read_and_process_notification_clients_tx_read",
+                    read_and_process_notification_clients_tx_read_start_time
+                );
 
                 if let Some(client_tx) = client_tx {
                     match send_notification(&client_tx, notification.to_owned(), &redis_pool).await
                     {
                         Ok(_) => {
+                            let read_and_process_notification_clients_tx_write_start_time =
+                                tokio::time::Instant::now();
                             if let Some((_, client_last_seen_stream_id)) = clients_tx
                                 .get(shard.inner() as usize)
                                 .expect("This error is impossible!")
@@ -379,6 +411,11 @@ async fn read_and_process_notification(
                                     client_id
                                 );
                             }
+                            measure_latency_duration!(
+                                "read_and_process_notification_clients_tx_write",
+                                read_and_process_notification_clients_tx_write_start_time
+                            );
+
                             if !is_acknowledment_required {
                                 let _ = clean_up_notification(
                                     &redis_pool,
@@ -478,6 +515,7 @@ async fn retry_notifications(
                     .await;
                 });
             } else {
+                let retry_notifications_clients_tx_read_start_time = tokio::time::Instant::now();
                 let client_tx_and_last_seen_notification_id = clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
@@ -487,6 +525,10 @@ async fn retry_notifications(
                     .map(|(client_tx, client_last_seen_stream_id)| {
                         (client_tx.clone(), client_last_seen_stream_id.clone())
                     });
+                measure_latency_duration!(
+                    "retry_notifications_clients_tx_write",
+                    retry_notifications_clients_tx_read_start_time
+                );
 
                 if let Some((client_tx, client_last_seen_stream_id)) =
                     client_tx_and_last_seen_notification_id

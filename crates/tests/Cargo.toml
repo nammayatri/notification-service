@@ -18,5 +18,5 @@ rand = "0.8"
 uuid = "1.7.0"
 lazy_static = "1.4"
 
-shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "a4ed6da" }
+shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "6c21852" }
 notification_service = { version = "0.1.0", path = "../notification_service" }
