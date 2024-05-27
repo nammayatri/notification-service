@@ -551,25 +551,33 @@ async fn retry_notifications(
                 if let Some((client_tx, client_last_seen_stream_id)) =
                     client_tx_and_last_seen_notification_id
                 {
-                    if let Err(err) = retry_notification_if_eligible(
-                        &client_tx,
-                        &client_id,
-                        &client_last_seen_stream_id,
-                        delay.as_secs(),
-                        notification,
-                    )
-                    .await
-                    {
-                        warn!("[Send Failed] : {}", err);
-                        handle_client_disconnection_or_failure(
-                            clients_tx.clone(),
-                            redis_pool.clone(),
-                            last_known_notification_cache_expiry,
-                            shard.inner(),
-                            &ClientId(client_id.to_owned()),
+                    let (redis_pool_clone, clients_tx_clone, client_id_clone, shard_clone) = (
+                        redis_pool.clone(),
+                        clients_tx.clone(),
+                        client_id.clone(),
+                        shard.clone(),
+                    );
+                    tokio::spawn(async move {
+                        if let Err(err) = retry_notification_if_eligible(
+                            &client_tx,
+                            &client_id_clone,
+                            &client_last_seen_stream_id,
+                            delay.as_secs(),
+                            notification,
                         )
-                        .await;
-                    }
+                        .await
+                        {
+                            warn!("[Send Failed] : {}", err);
+                            handle_client_disconnection_or_failure(
+                                clients_tx_clone,
+                                redis_pool_clone,
+                                last_known_notification_cache_expiry,
+                                shard_clone.inner(),
+                                &ClientId(client_id_clone.to_owned()),
+                            )
+                            .await;
+                        }
+                    });
                 } else {
                     warn!(
                         "Client ({:?}) entry does not exist, client got disconnected intermittently.",
