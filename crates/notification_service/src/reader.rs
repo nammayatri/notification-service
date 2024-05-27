@@ -391,55 +391,73 @@ async fn read_and_process_notification(
                 );
 
                 if let Some(client_tx) = client_tx {
-                    match send_notification(&client_tx, notification.to_owned(), &redis_pool).await
-                    {
-                        Ok(_) => {
-                            let read_and_process_notification_clients_tx_write_start_time =
-                                tokio::time::Instant::now();
-                            if let Some((_, client_last_seen_stream_id)) = clients_tx
-                                .get(shard.inner() as usize)
-                                .expect("This error is impossible!")
-                                .write()
-                                .await
-                                .get_mut(&ClientId(client_id.to_owned()))
-                            {
-                                *client_last_seen_stream_id =
-                                    Some(notification.stream_id.to_owned());
-                            } else {
-                                warn!(
+                    let (redis_pool_clone, clients_tx_clone, client_id_clone, shard_clone) = (
+                        redis_pool.clone(),
+                        clients_tx.clone(),
+                        client_id.clone(),
+                        shard.clone(),
+                    );
+                    tokio::spawn(async move {
+                        match send_notification(
+                            &client_tx,
+                            notification.to_owned(),
+                            &redis_pool_clone,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                let read_and_process_notification_clients_tx_write_start_time =
+                                    tokio::time::Instant::now();
+                                if let Some((_, client_last_seen_stream_id)) = clients_tx_clone
+                                    .get(shard_clone.inner() as usize)
+                                    .expect("This error is impossible!")
+                                    .write()
+                                    .await
+                                    .get_mut(&ClientId(client_id_clone.to_owned()))
+                                {
+                                    *client_last_seen_stream_id =
+                                        Some(notification.stream_id.to_owned());
+                                } else {
+                                    warn!(
                                     "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                                    client_id
+                                    client_id_clone
                                 );
-                            }
-                            measure_latency_duration!(
-                                "read_and_process_notification_clients_tx_write",
-                                read_and_process_notification_clients_tx_write_start_time
-                            );
+                                }
+                                measure_latency_duration!(
+                                    "read_and_process_notification_clients_tx_write",
+                                    read_and_process_notification_clients_tx_write_start_time
+                                );
 
-                            if !is_acknowledment_required {
-                                let _ = clean_up_notification(
-                                    &redis_pool,
-                                    &client_id,
-                                    &notification.id.inner(),
-                                    &notification.stream_id.inner(),
-                                    &Shard((hash_uuid(&client_id) % max_shards as u128) as u64),
+                                if !is_acknowledment_required {
+                                    let _ = clean_up_notification(
+                                        &redis_pool_clone,
+                                        &client_id_clone,
+                                        &notification.id.inner(),
+                                        &notification.stream_id.inner(),
+                                        &Shard(
+                                            (hash_uuid(&client_id_clone) % max_shards as u128)
+                                                as u64,
+                                        ),
+                                    )
+                                    .await
+                                    .map_err(|err| {
+                                        error!("Error in clean_up_notification : {}", err)
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                warn!("[Send Failed] : {}", err);
+                                handle_client_disconnection_or_failure(
+                                    clients_tx_clone,
+                                    redis_pool_clone,
+                                    last_known_notification_cache_expiry,
+                                    shard_clone.inner(),
+                                    &ClientId(client_id_clone.to_owned()),
                                 )
-                                .await
-                                .map_err(|err| error!("Error in clean_up_notification : {}", err));
+                                .await;
                             }
                         }
-                        Err(err) => {
-                            warn!("[Send Failed] : {}", err);
-                            handle_client_disconnection_or_failure(
-                                clients_tx.clone(),
-                                redis_pool.clone(),
-                                last_known_notification_cache_expiry,
-                                shard.inner(),
-                                &ClientId(client_id.to_owned()),
-                            )
-                            .await;
-                        }
-                    }
+                    });
                 } else {
                     warn!(
                         "Client ({:?}) entry does not exist, client got disconnected intermittently.",
