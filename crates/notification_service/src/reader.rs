@@ -356,6 +356,10 @@ async fn read_and_process_notification(
             notifications
         );
 
+        if notifications.is_empty() {
+            measure_latency_duration!("empty_notifications", tokio::time::Instant::now());
+        }
+
         for notification in notifications {
             if notification.ttl < Utc::now() {
                 let (redis_pool, shard, client_id, notification_id, notification_stream_id) = (
