@@ -35,7 +35,7 @@ use rustc_hash::FxHashMap;
 use shared::redis::types::RedisConnectionPool;
 use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{self, RwLock},
+    sync::{self, mpsc::UnboundedReceiver, RwLock},
     time::sleep,
 };
 use tracing::*;
@@ -310,7 +310,7 @@ async fn client_reciever(
 }
 
 async fn client_reciever_looper(
-    mut read_notification_rx: sync::mpsc::Receiver<(ClientId, Option<ClientTx>)>,
+    mut read_notification_rx: UnboundedReceiver<(ClientId, Option<ClientTx>)>,
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
@@ -612,7 +612,7 @@ async fn retry_notifications_looper(
 }
 
 pub async fn run_notification_reader(
-    read_notification_rx: sync::mpsc::Receiver<(ClientId, Option<ClientTx>)>,
+    read_notification_rx: UnboundedReceiver<(ClientId, Option<ClientTx>)>,
     graceful_termination_signal_rx: sync::oneshot::Receiver<()>,
     redis_pool: Arc<RedisConnectionPool>,
     retry_delay_seconds: u64,

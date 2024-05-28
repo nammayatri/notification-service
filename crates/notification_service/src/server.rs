@@ -26,7 +26,7 @@ use std::{
 use tokio::{
     signal::unix::{signal, SignalKind},
     sync::{
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Sender, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
 };
@@ -51,15 +51,15 @@ pub async fn run_server() -> Result<()> {
 
     #[allow(clippy::type_complexity)]
     let (read_notification_tx, read_notification_rx): (
-        Sender<(
+        UnboundedSender<(
             ClientId,
             Option<Sender<Result<NotificationPayload, Status>>>,
         )>,
-        Receiver<(
+        UnboundedReceiver<(
             ClientId,
             Option<Sender<Result<NotificationPayload, Status>>>,
         )>,
-    ) = mpsc::channel(app_state.channel_buffer);
+    ) = mpsc::unbounded_channel();
 
     let (signal_tx, signal_rx) = oneshot::channel();
     tokio::spawn(async move {

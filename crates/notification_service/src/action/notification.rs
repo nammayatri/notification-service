@@ -34,7 +34,7 @@ use reqwest::Url;
 use shared::redis::types::RedisConnectionPool;
 use std::{env::var, pin::Pin};
 use tokio::{
-    sync::mpsc::{self, Sender},
+    sync::mpsc::{self, Sender, UnboundedSender},
     time::{timeout, Instant},
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -43,7 +43,7 @@ use tracing::*;
 
 #[allow(clippy::type_complexity)]
 pub struct NotificationService {
-    read_notification_tx: Sender<(
+    read_notification_tx: UnboundedSender<(
         ClientId,
         Option<Sender<Result<NotificationPayload, Status>>>,
     )>,
@@ -53,7 +53,7 @@ pub struct NotificationService {
 impl NotificationService {
     #[allow(clippy::type_complexity)]
     pub fn new(
-        read_notification_tx: Sender<(
+        read_notification_tx: UnboundedSender<(
             ClientId,
             Option<Sender<Result<NotificationPayload, Status>>>,
         )>,
@@ -143,7 +143,6 @@ impl Notification for NotificationService {
         if let Err(err) = read_notification_tx
             .clone()
             .send((ClientId(client_id.to_owned()), Some(client_tx)))
-            .await
         {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
@@ -212,7 +211,6 @@ impl Notification for NotificationService {
                                 if let Err(err) = read_notification_tx
                                     .clone()
                                     .send((ClientId(client_id.to_owned()), None))
-                                    .await
                                 {
                                     error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -230,7 +228,6 @@ impl Notification for NotificationService {
                                 if let Err(err) = read_notification_tx
                                     .clone()
                                     .send((ClientId(client_id.to_owned()), None))
-                                    .await
                                 {
                                     error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -248,7 +245,6 @@ impl Notification for NotificationService {
                     notification_client_connection_duration!("TIMED_OUT", start_time);
                     if let Err(err) = read_notification_tx_clone
                         .send((ClientId(client_id_clone.to_owned()), None))
-                        .await
                     {
                         error!(
                             "Failed to remove client's ({:?}) instance from Reader : {:?}",
