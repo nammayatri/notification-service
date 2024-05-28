@@ -336,7 +336,6 @@ async fn read_and_process_notification(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     last_known_notification_cache_expiry: u32,
     max_shards: u64,
-    is_acknowledment_required: bool,
 ) {
     let read_client_notifications_batch_task_result =
         read_client_notifications_parallely_in_batch_task(
@@ -395,16 +394,23 @@ async fn read_and_process_notification(
                 );
 
                 if let Some(client_tx) = client_tx {
-                    let (redis_pool_clone, clients_tx_clone, client_id_clone, shard_clone) = (
+                    let (
+                        redis_pool_clone,
+                        clients_tx_clone,
+                        client_id_clone,
+                        shard_clone,
+                        notification_clone,
+                    ) = (
                         redis_pool.clone(),
                         clients_tx.clone(),
                         client_id.clone(),
                         shard.clone(),
+                        notification.clone(),
                     );
                     tokio::spawn(async move {
                         match send_notification(
                             &client_tx,
-                            notification.to_owned(),
+                            notification_clone.to_owned(),
                             &redis_pool_clone,
                         )
                         .await
@@ -420,7 +426,7 @@ async fn read_and_process_notification(
                                     .get_mut(&ClientId(client_id_clone.to_owned()))
                                 {
                                     *client_last_seen_stream_id =
-                                        Some(notification.stream_id.to_owned());
+                                        Some(notification_clone.stream_id.to_owned());
                                 } else {
                                     warn!(
                                     "Client ({:?}) entry does not exist, client got disconnected intermittently.",
@@ -431,23 +437,6 @@ async fn read_and_process_notification(
                                     "read_and_process_notification_clients_tx_write",
                                     read_and_process_notification_clients_tx_write_start_time
                                 );
-
-                                if !is_acknowledment_required {
-                                    let _ = clean_up_notification(
-                                        &redis_pool_clone,
-                                        &client_id_clone,
-                                        &notification.id.inner(),
-                                        &notification.stream_id.inner(),
-                                        &Shard(
-                                            (hash_uuid(&client_id_clone) % max_shards as u128)
-                                                as u64,
-                                        ),
-                                    )
-                                    .await
-                                    .map_err(|err| {
-                                        error!("Error in clean_up_notification : {}", err)
-                                    });
-                                }
                             }
                             Err(err) => {
                                 warn!("[Send Failed] : {}", err);
@@ -462,6 +451,15 @@ async fn read_and_process_notification(
                             }
                         }
                     });
+                    let _ = clean_up_notification(
+                        &redis_pool,
+                        &client_id,
+                        &notification.id.inner(),
+                        &notification.stream_id.inner(),
+                        &Shard((hash_uuid(&client_id) % max_shards as u128) as u64),
+                    )
+                    .await
+                    .map_err(|err| error!("Error in clean_up_notification : {}", err));
                 } else {
                     warn!(
                         "Client ({:?}) entry does not exist, client got disconnected intermittently.",
@@ -478,7 +476,6 @@ async fn read_and_process_notification_looper(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     last_known_notification_cache_expiry: u32,
     max_shards: u64,
-    is_acknowledment_required: bool,
 ) {
     loop {
         read_and_process_notification(
@@ -486,7 +483,6 @@ async fn read_and_process_notification_looper(
             clients_tx.clone(),
             last_known_notification_cache_expiry,
             max_shards,
-            is_acknowledment_required,
         )
         .await;
     }
@@ -618,7 +614,7 @@ pub async fn run_notification_reader(
     retry_delay_seconds: u64,
     last_known_notification_cache_expiry: u32,
     max_shards: u64,
-    is_acknowledment_required: bool,
+    _is_acknowledment_required: bool,
 ) {
     let clients_tx: Arc<Vec<RwLock<ReaderMap>>> = Arc::new(
         (0..max_shards)
@@ -639,7 +635,6 @@ pub async fn run_notification_reader(
         clients_tx.clone(),
         last_known_notification_cache_expiry,
         max_shards,
-        is_acknowledment_required,
     ));
 
     let retry_notifications_task = tokio::spawn(retry_notifications_looper(
