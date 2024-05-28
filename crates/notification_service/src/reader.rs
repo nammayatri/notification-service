@@ -338,7 +338,7 @@ async fn client_reciever_looper(
 async fn read_and_process_notification(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-    last_known_notification_cache_expiry: u32,
+    _last_known_notification_cache_expiry: u32,
     max_shards: u64,
 ) {
     let read_client_notifications_batch_task_result =
@@ -367,23 +367,14 @@ async fn read_and_process_notification(
             TOTAL_NOTIFICATIONS.inc();
 
             if notification.ttl < Utc::now() {
-                let (redis_pool, shard, client_id, notification_id, notification_stream_id) = (
-                    redis_pool.clone(),
-                    shard.clone(),
-                    client_id.clone(),
-                    notification.id.clone(),
-                    notification.stream_id.clone(),
-                );
-                tokio::spawn(async move {
-                    clear_expired_notification(
-                        &Arc::clone(&redis_pool),
-                        &shard.clone(),
-                        &client_id,
-                        &notification_id,
-                        &notification_stream_id,
-                    )
-                    .await;
-                });
+                clear_expired_notification(
+                    &Arc::clone(&redis_pool),
+                    &shard.clone(),
+                    &client_id,
+                    &notification.id.clone(),
+                    &notification.stream_id.clone(),
+                )
+                .await;
             } else {
                 let read_and_process_notification_clients_tx_read_start_time =
                     tokio::time::Instant::now();
@@ -400,72 +391,45 @@ async fn read_and_process_notification(
                 );
 
                 if let Some(client_tx) = client_tx {
-                    let (
-                        redis_pool_clone,
-                        clients_tx_clone,
-                        client_id_clone,
-                        shard_clone,
-                        notification_clone,
-                    ) = (
-                        redis_pool.clone(),
-                        clients_tx.clone(),
-                        client_id.clone(),
-                        shard.clone(),
-                        notification.clone(),
-                    );
-                    tokio::spawn(async move {
-                        match send_notification(
-                            &client_tx,
-                            notification_clone.to_owned(),
-                            &redis_pool_clone,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                let read_and_process_notification_clients_tx_write_start_time =
-                                    tokio::time::Instant::now();
-                                if let Some((_, client_last_seen_stream_id)) = clients_tx_clone
-                                    .get(shard_clone.inner() as usize)
-                                    .expect("This error is impossible!")
-                                    .write()
-                                    .await
-                                    .get_mut(&ClientId(client_id_clone.to_owned()))
-                                {
-                                    *client_last_seen_stream_id =
-                                        Some(notification_clone.stream_id.to_owned());
-                                } else {
-                                    warn!(
+                    match send_notification(&client_tx, notification.to_owned(), &redis_pool).await
+                    {
+                        Ok(_) => {
+                            let read_and_process_notification_clients_tx_write_start_time =
+                                tokio::time::Instant::now();
+                            if let Some((_, client_last_seen_stream_id)) = clients_tx
+                                .get(shard.inner() as usize)
+                                .expect("This error is impossible!")
+                                .write()
+                                .await
+                                .get_mut(&ClientId(client_id.to_owned()))
+                            {
+                                *client_last_seen_stream_id =
+                                    Some(notification.stream_id.to_owned());
+                            } else {
+                                warn!(
                                     "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                                    client_id_clone
-                                );
-                                }
-                                measure_latency_duration!(
-                                    "read_and_process_notification_clients_tx_write",
-                                    read_and_process_notification_clients_tx_write_start_time
+                                    client_id
                                 );
                             }
-                            Err(err) => {
-                                warn!("[Send Failed] : {}", err);
-                                handle_client_disconnection_or_failure(
-                                    clients_tx_clone,
-                                    redis_pool_clone,
-                                    last_known_notification_cache_expiry,
-                                    shard_clone.inner(),
-                                    &ClientId(client_id_clone.to_owned()),
-                                )
-                                .await;
-                            }
+                            measure_latency_duration!(
+                                "read_and_process_notification_clients_tx_write",
+                                read_and_process_notification_clients_tx_write_start_time
+                            );
+
+                            let _ = clean_up_notification(
+                                &redis_pool,
+                                &client_id,
+                                &notification.id.inner(),
+                                &notification.stream_id.inner(),
+                                &Shard((hash_uuid(&client_id) % max_shards as u128) as u64),
+                            )
+                            .await
+                            .map_err(|err| error!("Error in clean_up_notification : {}", err));
                         }
-                    });
-                    let _ = clean_up_notification(
-                        &redis_pool,
-                        &client_id,
-                        &notification.id.inner(),
-                        &notification.stream_id.inner(),
-                        &Shard((hash_uuid(&client_id) % max_shards as u128) as u64),
-                    )
-                    .await
-                    .map_err(|err| error!("Error in clean_up_notification : {}", err));
+                        Err(err) => {
+                            warn!("[Send Failed] : {}", err);
+                        }
+                    }
                 } else {
                     warn!(
                         "Client ({:?}) entry does not exist, client got disconnected intermittently.",
@@ -498,7 +462,7 @@ async fn read_and_process_notification_looper(
 async fn retry_notifications(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-    last_known_notification_cache_expiry: u32,
+    _last_known_notification_cache_expiry: u32,
     delay: Duration,
     max_shards: u64,
 ) {
@@ -522,23 +486,14 @@ async fn retry_notifications(
 
         for notification in notifications {
             if notification.ttl < Utc::now() {
-                let (redis_pool, shard, client_id, notification_id, notification_stream_id) = (
-                    redis_pool.clone(),
-                    shard.clone(),
-                    client_id.clone(),
-                    notification.id.clone(),
-                    notification.stream_id.clone(),
-                );
-                tokio::spawn(async move {
-                    clear_expired_notification(
-                        &Arc::clone(&redis_pool),
-                        &shard.clone(),
-                        &client_id,
-                        &notification_id,
-                        &notification_stream_id,
-                    )
-                    .await;
-                });
+                clear_expired_notification(
+                    &Arc::clone(&redis_pool),
+                    &shard.clone(),
+                    &client_id,
+                    &notification.id,
+                    &notification.stream_id,
+                )
+                .await;
             } else {
                 let retry_notifications_clients_tx_read_start_time = tokio::time::Instant::now();
                 let client_tx_and_last_seen_notification_id = clients_tx
@@ -558,16 +513,9 @@ async fn retry_notifications(
                 if let Some((client_tx, client_last_seen_stream_id)) =
                     client_tx_and_last_seen_notification_id
                 {
-                    let (redis_pool_clone, clients_tx_clone, client_id_clone, shard_clone) = (
-                        redis_pool.clone(),
-                        clients_tx.clone(),
-                        client_id.clone(),
-                        shard.clone(),
-                    );
-
                     match retry_notification_if_eligible(
                         &client_tx,
-                        &client_id_clone,
+                        &client_id,
                         &client_last_seen_stream_id,
                         delay.as_secs(),
                         notification.to_owned(),
@@ -587,14 +535,6 @@ async fn retry_notifications(
                         }
                         Err(err) => {
                             warn!("[Send Failed] : {}", err);
-                            handle_client_disconnection_or_failure(
-                                clients_tx_clone,
-                                redis_pool_clone,
-                                last_known_notification_cache_expiry,
-                                shard_clone.inner(),
-                                &ClientId(client_id_clone.to_owned()),
-                            )
-                            .await;
                         }
                     }
                 } else {
