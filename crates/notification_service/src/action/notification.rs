@@ -9,15 +9,13 @@
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
+        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
     },
     environment::AppState,
     measure_latency_duration, notification_client_connection_duration, notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
-    redis::commands::{
-        clean_up_notification, get_client_id, get_notification_stream_id, set_client_id,
-    },
+    redis::commands::{get_client_id, get_notification_stream_id, set_client_id},
     tools::{
         error::AppError,
         prometheus::{
@@ -174,33 +172,19 @@ impl Notification for NotificationService {
                                         let Timestamp(notification_created_at) =
                                             get_timestamp_from_stream_id(&notification_stream_id);
                                         notification_latency!(notification_created_at);
-                                        DELIVERED_NOTIFICATIONS.inc();
-                                        let _ = clean_up_notification(
-                                            &redis_pool,
-                                            &client_id,
-                                            &notification_ack.id,
-                                            &notification_stream_id,
-                                            &Shard(
-                                                (hash_uuid(&client_id) % max_shards as u128) as u64,
-                                            ),
-                                        )
-                                        .await
-                                        .map_err(|err| {
-                                            error!("Error in clean_up_notification : {}", err)
-                                        });
                                     }
                                     Ok(None) => {
-                                        DELIVERED_NOTIFICATIONS.inc();
                                         error!("Notification Stream Id Not Found.");
                                     }
                                     Err(err) => {
-                                        DELIVERED_NOTIFICATIONS.inc();
                                         error!(
                                             "Error in getting Notification Stream Id : {:?}",
                                             err
                                         );
                                     }
                                 }
+
+                                DELIVERED_NOTIFICATIONS.inc();
                             }
                             Ok(None) => {
                                 info!("Client ({}) Disconnected", client_id);

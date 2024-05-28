@@ -112,7 +112,6 @@ async fn send_notification(
     )
     .await
     .map_err(|err| error!("Error in set_notification_stream_id : {:?}", err));
-    TOTAL_NOTIFICATIONS.inc();
     Ok(())
 }
 
@@ -157,12 +156,17 @@ async fn retry_notification_if_eligible(
             debug!("[Notification_ClientId-{}] => NotificationTimestamp : {}, NotificationCurrentTimeDiff : {}, RetryDelay : {}", client_id, notification_ts, notification_curr_ts_diff, retry_delay_seconds);
 
             if notification_curr_ts_diff > retry_delay_seconds as f64 {
+                RETRIED_NOTIFICATIONS.inc();
                 client_tx
                     .send(Ok(transform_notification_data_to_payload(notification)))
                     .await?;
-                RETRIED_NOTIFICATIONS.inc();
             }
         }
+    } else {
+        RETRIED_NOTIFICATIONS.inc();
+        client_tx
+            .send(Ok(transform_notification_data_to_payload(notification)))
+            .await?;
     }
     Ok(())
 }
@@ -360,6 +364,8 @@ async fn read_and_process_notification(
         }
 
         for notification in notifications {
+            TOTAL_NOTIFICATIONS.inc();
+
             if notification.ttl < Utc::now() {
                 let (redis_pool, shard, client_id, notification_id, notification_stream_id) = (
                     redis_pool.clone(),
@@ -494,6 +500,7 @@ async fn retry_notifications(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     last_known_notification_cache_expiry: u32,
     delay: Duration,
+    max_shards: u64,
 ) {
     let read_client_notifications_batch_task_result =
         read_client_notifications_parallely_in_batch_task(
@@ -557,16 +564,28 @@ async fn retry_notifications(
                         client_id.clone(),
                         shard.clone(),
                     );
-                    tokio::spawn(async move {
-                        if let Err(err) = retry_notification_if_eligible(
-                            &client_tx,
-                            &client_id_clone,
-                            &client_last_seen_stream_id,
-                            delay.as_secs(),
-                            notification,
-                        )
-                        .await
-                        {
+
+                    match retry_notification_if_eligible(
+                        &client_tx,
+                        &client_id_clone,
+                        &client_last_seen_stream_id,
+                        delay.as_secs(),
+                        notification.to_owned(),
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            let _ = clean_up_notification(
+                                &redis_pool,
+                                &client_id,
+                                &notification.id.inner(),
+                                &notification.stream_id.inner(),
+                                &Shard((hash_uuid(&client_id) % max_shards as u128) as u64),
+                            )
+                            .await
+                            .map_err(|err| error!("Error in clean_up_notification : {}", err));
+                        }
+                        Err(err) => {
                             warn!("[Send Failed] : {}", err);
                             handle_client_disconnection_or_failure(
                                 clients_tx_clone,
@@ -577,7 +596,7 @@ async fn retry_notifications(
                             )
                             .await;
                         }
-                    });
+                    }
                 } else {
                     warn!(
                         "Client ({:?}) entry does not exist, client got disconnected intermittently.",
@@ -594,6 +613,7 @@ async fn retry_notifications_looper(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     last_known_notification_cache_expiry: u32,
     delay: Duration,
+    max_shards: u64,
 ) {
     loop {
         retry_notifications(
@@ -601,6 +621,7 @@ async fn retry_notifications_looper(
             clients_tx.clone(),
             last_known_notification_cache_expiry,
             delay,
+            max_shards,
         )
         .await;
         sleep(delay).await;
@@ -642,6 +663,7 @@ pub async fn run_notification_reader(
         clients_tx.clone(),
         last_known_notification_cache_expiry,
         Duration::from_secs(retry_delay_seconds),
+        max_shards,
     ));
 
     tokio::select!(
