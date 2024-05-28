@@ -455,6 +455,7 @@ async fn read_and_process_notification_looper(
             max_shards,
         )
         .await;
+        sleep(Duration::from_millis(100)).await;
     }
 }
 
