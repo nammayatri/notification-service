@@ -138,7 +138,7 @@ async fn retry_notification_if_eligible(
     client_tx: &ClientTx,
     client_id: &str,
     client_last_seen_stream_id: &Option<StreamEntry>,
-    retry_delay_seconds: u64,
+    retry_delay_millis: u128,
     notification: NotificationData,
 ) -> Result<()> {
     if let Some(client_last_seen_stream_id) = client_last_seen_stream_id {
@@ -149,11 +149,12 @@ async fn retry_notification_if_eligible(
         ) {
             let Timestamp(notification_ts) =
                 get_timestamp_from_stream_id(&notification.stream_id.inner());
-            let notification_curr_ts_diff = abs_diff_utc_as_sec(notification_ts, Utc::now());
+            let notification_curr_ts_diff_millis =
+                abs_diff_utc_as_sec(notification_ts, Utc::now()) * 1000.0;
 
-            debug!("[Notification_ClientId-{}] => NotificationTimestamp : {}, NotificationCurrentTimeDiff : {}, RetryDelay : {}", client_id, notification_ts, notification_curr_ts_diff, retry_delay_seconds);
+            debug!("[Notification_ClientId-{}] => NotificationTimestamp : {}, NotificationCurrentTimeDiffMillis : {}, RetryDelay : {}", client_id, notification_ts, notification_curr_ts_diff_millis, retry_delay_millis);
 
-            if notification_curr_ts_diff > retry_delay_seconds as f64 {
+            if notification_curr_ts_diff_millis > retry_delay_millis as f64 {
                 RETRIED_NOTIFICATIONS.inc();
                 client_tx
                     .send(Ok(transform_notification_data_to_payload(notification)))
@@ -441,6 +442,7 @@ async fn read_and_process_notification_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     last_known_notification_cache_expiry: u32,
+    delay: Duration,
     max_shards: u64,
 ) {
     loop {
@@ -451,7 +453,7 @@ async fn read_and_process_notification_looper(
             max_shards,
         )
         .await;
-        sleep(Duration::from_millis(100)).await;
+        sleep(delay).await;
     }
 }
 
@@ -513,7 +515,7 @@ async fn retry_notifications(
                         &client_tx,
                         &client_id,
                         &client_last_seen_stream_id,
-                        delay.as_secs(),
+                        delay.as_millis(),
                         notification.to_owned(),
                     )
                     .await
@@ -563,11 +565,13 @@ async fn retry_notifications_looper(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_notification_reader(
     read_notification_rx: UnboundedReceiver<(ClientId, Option<ClientTx>)>,
     graceful_termination_signal_rx: sync::oneshot::Receiver<()>,
     redis_pool: Arc<RedisConnectionPool>,
-    retry_delay_seconds: u64,
+    reader_delay_millis: u64,
+    retry_delay_millis: u64,
     last_known_notification_cache_expiry: u32,
     max_shards: u64,
     _is_acknowledment_required: bool,
@@ -590,6 +594,7 @@ pub async fn run_notification_reader(
         redis_pool.clone(),
         clients_tx.clone(),
         last_known_notification_cache_expiry,
+        Duration::from_millis(reader_delay_millis),
         max_shards,
     ));
 
@@ -597,7 +602,7 @@ pub async fn run_notification_reader(
         redis_pool.clone(),
         clients_tx.clone(),
         last_known_notification_cache_expiry,
-        Duration::from_secs(retry_delay_seconds),
+        Duration::from_millis(retry_delay_millis),
         max_shards,
     ));
 
