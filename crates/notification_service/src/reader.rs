@@ -120,14 +120,12 @@ async fn clear_expired_notification(
     redis_pool: &RedisConnectionPool,
     shard: &Shard,
     client_id: &str,
-    notification_id: &NotificationId,
     notification_stream_id: &StreamEntry,
 ) {
     EXPIRED_NOTIFICATIONS.inc();
     let _ = clean_up_notification(
         redis_pool,
         client_id,
-        &notification_id.inner(),
         &notification_stream_id.inner(),
         shard,
     )
@@ -371,7 +369,6 @@ async fn read_and_process_notification(
                     &Arc::clone(&redis_pool),
                     &shard.clone(),
                     &client_id,
-                    &notification.id.clone(),
                     &notification.stream_id.clone(),
                 )
                 .await;
@@ -419,7 +416,6 @@ async fn read_and_process_notification(
                             let _ = clean_up_notification(
                                 &redis_pool,
                                 &client_id,
-                                &notification.id.inner(),
                                 &notification.stream_id.inner(),
                                 &Shard((hash_uuid(&client_id) % max_shards as u128) as u64),
                             )
@@ -491,7 +487,6 @@ async fn retry_notifications(
                     &Arc::clone(&redis_pool),
                     &shard.clone(),
                     &client_id,
-                    &notification.id,
                     &notification.stream_id,
                 )
                 .await;
@@ -527,7 +522,6 @@ async fn retry_notifications(
                             let _ = clean_up_notification(
                                 &redis_pool,
                                 &client_id,
-                                &notification.id.inner(),
                                 &notification.stream_id.inner(),
                                 &Shard((hash_uuid(&client_id) % max_shards as u128) as u64),
                             )

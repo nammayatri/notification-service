@@ -129,16 +129,28 @@ pub async fn get_notification_stream_id(
 }
 
 #[macros::measure_duration]
-pub async fn clean_up_notification(
+pub async fn clear_notification_stream_id(
     redis_pool: &RedisConnectionPool,
     client_id: &str,
-    notification_id: &str,
     notification_stream_id: &str,
     Shard(shard): &Shard,
 ) -> Result<()> {
     redis_pool
-        .delete_key(&notification_stream_key(notification_id))
+        .xdel(
+            &notification_client_key(client_id, shard),
+            notification_stream_id,
+        )
         .await?;
+    Ok(())
+}
+
+#[macros::measure_duration]
+pub async fn clean_up_notification(
+    redis_pool: &RedisConnectionPool,
+    client_id: &str,
+    notification_stream_id: &str,
+    Shard(shard): &Shard,
+) -> Result<()> {
     redis_pool
         .xdel(
             &notification_client_key(client_id, shard),

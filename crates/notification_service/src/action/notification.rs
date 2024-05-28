@@ -9,13 +9,15 @@
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
+        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
     },
     environment::AppState,
     measure_latency_duration, notification_client_connection_duration, notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
-    redis::commands::{get_client_id, get_notification_stream_id, set_client_id},
+    redis::commands::{
+        clear_notification_stream_id, get_client_id, get_notification_stream_id, set_client_id,
+    },
     tools::{
         error::AppError,
         prometheus::{
@@ -172,6 +174,19 @@ impl Notification for NotificationService {
                                         let Timestamp(notification_created_at) =
                                             get_timestamp_from_stream_id(&notification_stream_id);
                                         notification_latency!(notification_created_at);
+
+                                        let _ = clear_notification_stream_id(
+                                            &redis_pool,
+                                            &client_id,
+                                            &notification_stream_id,
+                                            &Shard(
+                                                (hash_uuid(&client_id) % max_shards as u128) as u64,
+                                            ),
+                                        )
+                                        .await
+                                        .map_err(|err| {
+                                            error!("Error in clear_notification_stream_idclear_notification_stream_id : {}", err)
+                                        });
                                     }
                                     Ok(None) => {
                                         error!("Notification Stream Id Not Found.");
