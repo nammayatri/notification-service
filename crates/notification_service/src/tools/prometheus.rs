@@ -169,6 +169,11 @@ macro_rules! call_external_api {
 pub fn prometheus_metrics() -> PrometheusMetrics {
     let prometheus = PrometheusMetricsBuilder::new("api")
         .endpoint("/metrics")
+        .buckets(&[
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0,
+            6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0,
+            90.0, 100.0, 200.0, 300.0, 400.0,
+        ])
         .build()
         .expect("Failed to create Prometheus Metrics");
 
