@@ -181,8 +181,9 @@ async fn read_client_notifications_parallely_in_batch_task(
             async move {
                 let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
                     tokio::time::Instant::now();
-                let clients_read_lock = clients.read().await;
-                let clients_last_seen_notification_id = clients_read_lock
+                let clients_last_seen_notification_id = clients
+                    .read()
+                    .await
                     .iter()
                     .map(|(client_id, (_, last_seen_stream_id))| {
                         let stream_id = if read_stream_from_beginning {
@@ -193,7 +194,6 @@ async fn read_client_notifications_parallely_in_batch_task(
                         (client_id.clone(), stream_id)
                     })
                     .collect();
-                drop(clients_read_lock);
                 measure_latency_duration!(
                     "read_client_notifications_parallely_in_batch_task_clients_tx_read",
                     read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
