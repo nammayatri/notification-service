@@ -83,10 +83,7 @@ pub async fn run_server() -> Result<()> {
         signal_rx,
         app_state.redis_pool.clone(),
         app_state.reader_delay_millis,
-        app_state.retry_delay_millis,
-        app_state.last_known_notification_cache_expiry,
         app_state.max_shards,
-        app_state.is_acknowledment_required,
     );
 
     let prometheus = prometheus_metrics();

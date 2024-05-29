@@ -9,15 +9,13 @@
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
+        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
     },
     environment::AppState,
     measure_latency_duration, notification_client_connection_duration, notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
-    redis::commands::{
-        clear_notification_stream_id, get_client_id, get_notification_stream_id, set_client_id,
-    },
+    redis::commands::{get_client_id, get_notification_stream_id, set_client_id},
     tools::{
         error::AppError,
         prometheus::{
@@ -125,18 +123,11 @@ impl Notification for NotificationService {
 
         let (client_tx, client_rx) = mpsc::channel(self.app_state.channel_buffer);
 
-        let (
-            redis_pool,
-            read_notification_tx,
-            max_shards,
-            request_timeout_seconds,
-            is_acknowledment_required,
-        ) = (
+        let (redis_pool, read_notification_tx, max_shards, request_timeout_seconds) = (
             self.app_state.redis_pool.clone(),
             self.read_notification_tx.clone(),
             self.app_state.max_shards,
             self.app_state.request_timeout_seconds,
-            self.app_state.is_acknowledment_required,
         );
 
         let add_client_tx_start_time = Instant::now();
@@ -151,108 +142,86 @@ impl Notification for NotificationService {
         }
         measure_latency_duration!("add_client_tx", add_client_tx_start_time);
 
-        if is_acknowledment_required {
-            tokio::spawn(async move {
-                let (read_notification_tx_clone, client_id_clone) =
-                    (read_notification_tx.clone(), client_id.clone());
+        tokio::spawn(async move {
+            let (read_notification_tx_clone, client_id_clone) =
+                (read_notification_tx.clone(), client_id.clone());
 
-                if let Err(err) = timeout(request_timeout_seconds, async move {
-                    let mut stream = request.into_inner();
+            if let Err(err) = timeout(request_timeout_seconds, async move {
+                let mut stream = request.into_inner();
 
-                    loop {
-                        match stream.message().await {
-                            Ok(Some(notification_ack)) => {
-                                // This is during the initial connection
-                                if notification_ack.id.is_empty() {
-                                    continue;
-                                }
-                                // Acknowledgment for sent notification from the client
-                                match get_notification_stream_id(&redis_pool, &notification_ack.id)
-                                    .await
-                                {
-                                    Ok(Some(StreamEntry(notification_stream_id))) => {
-                                        let Timestamp(notification_created_at) =
-                                            get_timestamp_from_stream_id(&notification_stream_id);
-                                        notification_latency!(notification_created_at);
-
-                                        let _ = clear_notification_stream_id(
-                                            &redis_pool,
-                                            &client_id,
-                                            &notification_stream_id,
-                                            &Shard(
-                                                (hash_uuid(&client_id) % max_shards as u128) as u64,
-                                            ),
-                                        )
-                                        .await
-                                        .map_err(|err| {
-                                            error!("Error in clear_notification_stream_idclear_notification_stream_id : {}", err)
-                                        });
-                                    }
-                                    Ok(None) => {
-                                        error!("Notification Stream Id Not Found.");
-                                    }
-                                    Err(err) => {
-                                        error!(
-                                            "Error in getting Notification Stream Id : {:?}",
-                                            err
-                                        );
-                                    }
-                                }
-
-                                DELIVERED_NOTIFICATIONS.inc();
+                loop {
+                    match stream.message().await {
+                        Ok(Some(notification_ack)) => {
+                            // This is during the initial connection
+                            if notification_ack.id.is_empty() {
+                                continue;
                             }
-                            Ok(None) => {
-                                info!("Client ({}) Disconnected", client_id);
-                                notification_client_connection_duration!(
-                                    "DISCONNECTED",
-                                    start_time
-                                );
-                                if let Err(err) = read_notification_tx
-                                    .clone()
-                                    .send((ClientId(client_id.to_owned()), None))
-                                {
-                                    error!(
+                            // Acknowledgment for sent notification from the client
+                            match get_notification_stream_id(&redis_pool, &notification_ack.id)
+                                .await
+                            {
+                                Ok(Some(StreamEntry(notification_stream_id))) => {
+                                    notification_latency!(
+                                        get_timestamp_from_stream_id(&notification_stream_id)
+                                            .inner(),
+                                        "ACK"
+                                    );
+                                }
+                                Ok(None) => {
+                                    error!("Notification Stream Id Not Found.");
+                                }
+                                Err(err) => {
+                                    error!("Error in getting Notification Stream Id : {:?}", err);
+                                }
+                            }
+
+                            DELIVERED_NOTIFICATIONS.inc();
+                        }
+                        Ok(None) => {
+                            info!("Client ({}) Disconnected", client_id);
+                            notification_client_connection_duration!("DISCONNECTED", start_time);
+                            if let Err(err) = read_notification_tx
+                                .clone()
+                                .send((ClientId(client_id.to_owned()), None))
+                            {
+                                error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
                                     client_id, err
                                 );
-                                }
-                                break;
                             }
-                            Err(err) => {
-                                info!("Client ({}) Disconnected : {}", client_id, err);
-                                notification_client_connection_duration!(
-                                    "DISCONNECTED",
-                                    start_time
-                                );
-                                if let Err(err) = read_notification_tx
-                                    .clone()
-                                    .send((ClientId(client_id.to_owned()), None))
-                                {
-                                    error!(
+                            break;
+                        }
+                        Err(err) => {
+                            info!("Client ({}) Disconnected : {}", client_id, err);
+                            notification_client_connection_duration!("DISCONNECTED", start_time);
+                            if let Err(err) = read_notification_tx
+                                .clone()
+                                .send((ClientId(client_id.to_owned()), None))
+                            {
+                                error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
                                     client_id, err
                                 );
-                                }
-                                break;
                             }
+                            break;
                         }
                     }
-                })
-                .await
-                {
-                    info!("Client ({}) Timed Out : {}", client_id_clone, err);
-                    notification_client_connection_duration!("TIMED_OUT", start_time);
-                    if let Err(err) = read_notification_tx_clone
-                        .send((ClientId(client_id_clone.to_owned()), None))
-                    {
-                        error!(
-                            "Failed to remove client's ({:?}) instance from Reader : {:?}",
-                            client_id_clone, err
-                        );
-                    }
                 }
-            });
-        }
+            })
+            .await
+            {
+                info!("Client ({}) Timed Out : {}", client_id_clone, err);
+                notification_client_connection_duration!("TIMED_OUT", start_time);
+                if let Err(err) =
+                    read_notification_tx_clone.send((ClientId(client_id_clone.to_owned()), None))
+                {
+                    error!(
+                        "Failed to remove client's ({:?}) instance from Reader : {:?}",
+                        client_id_clone, err
+                    );
+                }
+            }
+        });
 
         Ok(Response::new(Box::pin(ReceiverStream::new(client_rx))))
     }

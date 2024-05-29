@@ -44,7 +44,7 @@ pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
     once_cell::sync::Lazy::new(|| {
         register_histogram_vec!(
             opts!("notification_duration_seconds", "Notification Latency").into(),
-            &["version"]
+            &["version", "ack"]
         )
         .expect("Failed to register notifiction latency metrics")
     });
@@ -71,12 +71,6 @@ pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
     once_cell::sync::Lazy::new(|| {
         register_int_counter!("expired_notifications", "Expired Notifications")
             .expect("Failed to register expired notifications metrics")
-    });
-
-pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
-    once_cell::sync::Lazy::new(|| {
-        register_int_counter!("retried_notifications", "Retried Notifications")
-            .expect("Failed to register retried notifications metrics")
     });
 
 pub static CALL_EXTERNAL_API: once_cell::sync::Lazy<HistogramVec> =
@@ -121,12 +115,12 @@ macro_rules! incoming_api {
 
 #[macro_export]
 macro_rules! notification_latency {
-    ($start:expr) => {
+    ($start:expr, $ack:expr) => {
         let now = Utc::now();
         let duration = abs_diff_utc_as_sec($start, now);
         let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
         NOTIFICATION_LATENCY
-            .with_label_values(&[version.as_str()])
+            .with_label_values(&[version.as_str(), $ack])
             .observe(duration);
     };
 }
@@ -216,11 +210,6 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(EXPIRED_NOTIFICATIONS.to_owned()))
         .expect("Failed to register expired notifications metrics");
-
-    prometheus
-        .registry
-        .register(Box::new(RETRIED_NOTIFICATIONS.to_owned()))
-        .expect("Failed to register retried notifications metrics");
 
     prometheus
         .registry

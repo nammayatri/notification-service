@@ -8,7 +8,10 @@
 
 use super::{keys::*, types::NotificationData};
 use crate::{
-    common::{types::*, utils::decode_stream},
+    common::{
+        types::*,
+        utils::{abs_diff_utc_as_sec, decode_stream},
+    },
     measure_latency_duration,
     tools::prometheus::MEASURE_DURATION,
 };
@@ -16,25 +19,52 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use shared::redis::{error::RedisError, types::RedisConnectionPool};
+use std::cmp::{max, min};
 use tracing::*;
+
+#[macros::measure_duration]
+pub async fn set_client_id(
+    redis_pool: &RedisConnectionPool,
+    auth_token_expiry: &u32,
+    token: &str,
+    ClientId(client_id): &ClientId,
+) -> Result<()> {
+    redis_pool
+        .set_key_as_str(&client_details_key(token), client_id, *auth_token_expiry)
+        .await?;
+    Ok(())
+}
+
+#[macros::measure_duration]
+pub async fn get_client_id(
+    redis_pool: &RedisConnectionPool,
+    token: &str,
+) -> Result<Option<ClientId>> {
+    Ok(redis_pool
+        .get_key_as_str(&client_details_key(token))
+        .await?
+        .map(ClientId))
+}
 
 #[macros::measure_duration]
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
-    clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
+    client_ids: Vec<ClientId>,
     Shard(shard): &Shard,
 ) -> Result<Vec<(Shard, ClientId, Vec<NotificationData>)>> {
-    if clients_last_seen_notification_id.is_empty() {
+    if client_ids.is_empty() {
         return Ok(Vec::default());
     }
 
-    let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) =
-        clients_last_seen_notification_id
-            .into_iter()
-            .map(|(ClientId(client_id), StreamEntry(last_entry))| {
-                (notification_client_key(&client_id, shard), last_entry)
-            })
-            .unzip();
+    let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) = client_ids
+        .into_iter()
+        .map(|ClientId(client_id)| {
+            (
+                notification_client_key(&client_id, shard),
+                StreamEntry::default().inner(),
+            )
+        })
+        .unzip();
 
     let notifications = redis_pool
         .xread(
@@ -76,42 +106,18 @@ pub async fn read_client_notifications(
 }
 
 #[macros::measure_duration]
-pub async fn set_client_id(
-    redis_pool: &RedisConnectionPool,
-    auth_token_expiry: &u32,
-    token: &str,
-    ClientId(client_id): &ClientId,
-) -> Result<()> {
-    redis_pool
-        .set_key_as_str(&client_details_key(token), client_id, *auth_token_expiry)
-        .await?;
-    Ok(())
-}
-
-#[macros::measure_duration]
-pub async fn get_client_id(
-    redis_pool: &RedisConnectionPool,
-    token: &str,
-) -> Result<Option<ClientId>> {
-    Ok(redis_pool
-        .get_key_as_str(&client_details_key(token))
-        .await?
-        .map(ClientId))
-}
-
-#[macros::measure_duration]
 pub async fn set_notification_stream_id(
     redis_pool: &RedisConnectionPool,
     notification_id: &str,
     notification_stream_id: &str,
-    _notification_ttl: DateTime<Utc>,
+    notification_ttl: DateTime<Utc>,
 ) -> Result<(), RedisError> {
-    let _now = Utc::now();
+    let now = Utc::now();
     redis_pool
         .set_key_as_str(
             &notification_stream_key(notification_id),
             notification_stream_id,
-            60, // 2 * abs_diff_utc_as_sec(min(now, notification_ttl), max(now, notification_ttl)) as u32,
+            abs_diff_utc_as_sec(min(now, notification_ttl), max(now, notification_ttl)) as u32 + 60, // Extra 60 seconds buffer
         )
         .await?;
     Ok(())
@@ -129,22 +135,6 @@ pub async fn get_notification_stream_id(
 }
 
 #[macros::measure_duration]
-pub async fn clear_notification_stream_id(
-    redis_pool: &RedisConnectionPool,
-    client_id: &str,
-    notification_stream_id: &str,
-    Shard(shard): &Shard,
-) -> Result<()> {
-    redis_pool
-        .xdel(
-            &notification_client_key(client_id, shard),
-            notification_stream_id,
-        )
-        .await?;
-    Ok(())
-}
-
-#[macros::measure_duration]
 pub async fn clean_up_notification(
     redis_pool: &RedisConnectionPool,
     client_id: &str,
@@ -158,51 +148,4 @@ pub async fn clean_up_notification(
         )
         .await?;
     Ok(())
-}
-
-#[macros::measure_duration]
-pub async fn set_client_last_sent_notification(
-    redis_pool: &RedisConnectionPool,
-    client_id: String,
-    last_seen_notification_id: String,
-    expiry_time: u32,
-) -> Result<()> {
-    redis_pool
-        .set_key(
-            &last_sent_client_notification_key(&client_id),
-            last_seen_notification_id,
-            expiry_time,
-        )
-        .await?;
-    Ok(())
-}
-
-#[macros::measure_duration]
-pub async fn set_clients_last_sent_notification(
-    redis_pool: &RedisConnectionPool,
-    clients_last_seen_notification_id: Vec<(ClientId, StreamEntry)>,
-    expiry_time: u32,
-) -> Result<()> {
-    for (ClientId(client_id), StreamEntry(last_seen_notification_id)) in
-        clients_last_seen_notification_id
-    {
-        set_client_last_sent_notification(
-            redis_pool,
-            client_id,
-            last_seen_notification_id,
-            expiry_time,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-#[macros::measure_duration]
-pub async fn get_client_last_sent_notification(
-    redis_pool: &RedisConnectionPool,
-    ClientId(client_id): &ClientId,
-) -> Result<Option<StreamEntry>> {
-    Ok(redis_pool
-        .get_key::<StreamEntry>(&last_sent_client_notification_key(client_id))
-        .await?)
 }

@@ -32,10 +32,7 @@ in {
     internal_auth_cfg = internal_auth_cfg,
     logger_cfg = logger_cfg,
     redis_cfg = redis_cfg,
-    last_known_notification_cache_expiry = 86400,
     reader_delay_millis = 100,
-    retry_delay_millis = 5000,
-    is_acknowledment_required = True,
     max_shards = +5,
     channel_buffer = 100000,
     request_timeout_seconds = 60

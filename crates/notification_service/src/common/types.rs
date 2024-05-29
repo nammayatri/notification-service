@@ -44,4 +44,4 @@ impl Default for StreamEntry {
 
 pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
 
-pub type ReaderMap = FxHashMap<ClientId, (ClientTx, Option<StreamEntry>)>;
+pub type ReaderMap = FxHashMap<ClientId, ClientTx>;

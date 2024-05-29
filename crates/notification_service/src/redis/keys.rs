@@ -14,10 +14,6 @@ pub fn client_details_key(token: &str) -> String {
     format!("notification:client_details:{token}")
 }
 
-pub fn last_sent_client_notification_key(client_id: &str) -> String {
-    format!("notification:last_sent_client_notification:{client_id}")
-}
-
 pub fn notification_stream_key(notification_id: &str) -> String {
     format!("notifition:stream:{}", notification_id)
 }

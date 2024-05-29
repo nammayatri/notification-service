@@ -28,13 +28,10 @@ pub struct AppConfig {
     pub internal_auth_cfg: InternalAuthConfig,
     pub logger_cfg: LoggerConfig,
     pub redis_cfg: RedisSettings,
-    pub last_known_notification_cache_expiry: u32,
-    pub retry_delay_millis: u64,
     pub reader_delay_millis: u64,
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: u64,
-    pub is_acknowledment_required: bool,
 }
 
 #[derive(Clone)]
@@ -43,15 +40,12 @@ pub struct AppState {
     pub auth_url: Url,
     pub auth_api_key: String,
     pub auth_token_expiry: u32,
-    pub retry_delay_millis: u64,
     pub reader_delay_millis: u64,
-    pub last_known_notification_cache_expiry: u32,
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: Duration,
-    pub is_acknowledment_required: bool,
 }
 
 impl AppState {
@@ -68,15 +62,12 @@ impl AppState {
                 .expect("Failed to parse auth_url."),
             auth_api_key: app_config.internal_auth_cfg.auth_api_key,
             auth_token_expiry: app_config.internal_auth_cfg.auth_token_expiry,
-            last_known_notification_cache_expiry: app_config.last_known_notification_cache_expiry,
-            retry_delay_millis: app_config.retry_delay_millis,
             reader_delay_millis: app_config.reader_delay_millis,
             grpc_port: app_config.grpc_port,
             http_server_port: app_config.http_server_port,
             max_shards: app_config.max_shards,
             channel_buffer: app_config.channel_buffer,
             request_timeout_seconds: Duration::from_secs(app_config.request_timeout_seconds),
-            is_acknowledment_required: app_config.is_acknowledment_required,
         }
     }
 }
