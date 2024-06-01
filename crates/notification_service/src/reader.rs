@@ -96,39 +96,6 @@ async fn clear_expired_notification(
 }
 
 #[macros::measure_duration]
-async fn read_client_notifications_parallely_in_batch_task(
-    redis_pool: &RedisConnectionPool,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-) -> Vec<(Shard, ClientId, Vec<NotificationData>)> {
-    let read_client_notifications_batch_task: Vec<_> = clients_tx
-        .iter()
-        .enumerate()
-        .map(|(shard, clients)| {
-            let shard = Shard(shard as u64);
-            async move {
-                let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
-                    tokio::time::Instant::now();
-                let client_ids = clients
-                    .read()
-                    .await
-                    .iter()
-                    .map(|(client_id, _)| client_id.clone())
-                    .collect();
-                measure_latency_duration!(
-                    "read_client_notifications_parallely_in_batch_task_clients_tx_read",
-                    read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
-                );
-
-                read_client_notifications(redis_pool, client_ids, &shard).await
-            }
-        })
-        .collect();
-
-    let results = join_all(read_client_notifications_batch_task).await;
-    results.into_iter().flatten().flatten().collect()
-}
-
-#[macros::measure_duration]
 async fn handle_client_disconnection_or_failure(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     shard: u64,
@@ -196,67 +163,88 @@ async fn read_and_process_notification(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
 ) {
-    let read_client_notifications_batch_task_result =
-        read_client_notifications_parallely_in_batch_task(&redis_pool.clone(), clients_tx.clone())
-            .await;
-
-    for (shard, ClientId(client_id), notifications) in
-        read_client_notifications_batch_task_result.into_iter()
-    {
-        warn!(
-            "[Notification_Shard_{}_ClientId-{}] => {:?}",
-            shard.inner(),
-            client_id,
-            notifications
-        );
-
-        for notification in notifications {
-            TOTAL_NOTIFICATIONS.inc();
-
-            if notification.ttl < Utc::now() {
-                clear_expired_notification(
-                    &Arc::clone(&redis_pool),
-                    &shard.clone(),
-                    &client_id,
-                    &notification.stream_id.clone(),
-                )
-                .await;
-            } else {
-                let read_and_process_notification_clients_tx_read_start_time =
+    let read_client_notifications_batch_task: Vec<_> = clients_tx
+        .iter()
+        .enumerate()
+        .map(|(shard, clients)| {
+            let shard = Shard(shard as u64);
+            let (redis_pool_clone, clients_tx_clone) = (redis_pool.clone(), clients_tx.clone());
+            async move {
+                let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
                     tokio::time::Instant::now();
-                let client_tx = clients_tx
-                    .get(shard.inner() as usize)
-                    .expect("This error is impossible!")
+                let client_ids = clients
                     .read()
                     .await
-                    .get(&ClientId(client_id.to_owned()))
-                    .cloned();
+                    .iter()
+                    .map(|(client_id, _)| client_id.clone())
+                    .collect();
                 measure_latency_duration!(
-                    "read_and_process_notification_clients_tx_read",
-                    read_and_process_notification_clients_tx_read_start_time
+                    "read_client_notifications_parallely_in_batch_task_clients_tx_read",
+                    read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
                 );
 
-                if let Some(client_tx) = client_tx {
-                    if let Err(err) = send_notification(
-                        &client_id,
-                        &client_tx,
-                        notification.to_owned(),
-                        &redis_pool,
-                        &shard,
-                    )
-                    .await
-                    {
-                        warn!("[Send Failed] : {}", err);
+                let notifications = read_client_notifications(&redis_pool_clone, client_ids, &shard).await;
+
+                match notifications {
+                    Ok(notifications) => {
+                        for (ClientId(client_id), notifications) in notifications.into_iter() {
+                            for notification in notifications {
+                                TOTAL_NOTIFICATIONS.inc();
+
+                                if notification.ttl < Utc::now() {
+                                    clear_expired_notification(
+                                        &Arc::clone(&redis_pool_clone),
+                                        &shard.clone(),
+                                        &client_id,
+                                        &notification.stream_id.clone(),
+                                    )
+                                    .await;
+                                } else {
+                                    let read_and_process_notification_clients_tx_read_start_time =
+                                        tokio::time::Instant::now();
+                                    let client_tx = clients_tx_clone
+                                        .get(shard.inner() as usize)
+                                        .expect("This error is impossible!")
+                                        .read()
+                                        .await
+                                        .get(&ClientId(client_id.to_owned()))
+                                        .cloned();
+                                    measure_latency_duration!(
+                                        "read_and_process_notification_clients_tx_read",
+                                        read_and_process_notification_clients_tx_read_start_time
+                                    );
+
+                                    if let Some(client_tx) = client_tx {
+                                        if let Err(err) = send_notification(
+                                            &client_id,
+                                            &client_tx,
+                                            notification.to_owned(),
+                                            &redis_pool_clone,
+                                            &shard,
+                                        )
+                                        .await
+                                        {
+                                            warn!("[Send Failed] : {}", err);
+                                        }
+                                    } else {
+                                        warn!(
+                                            "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                                            client_id
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Err(err) => {
+                        error!("read_client_notifications : {}", err);
                     }
-                } else {
-                    warn!(
-                        "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                        client_id
-                    );
                 }
             }
-        }
-    }
+        })
+        .collect();
+
+    join_all(read_client_notifications_batch_task).await;
 }
 
 async fn read_and_process_notification_looper(

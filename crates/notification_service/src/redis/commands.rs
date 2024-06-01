@@ -51,7 +51,7 @@ pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
     client_ids: Vec<ClientId>,
     Shard(shard): &Shard,
-) -> Result<Vec<(Shard, ClientId, Vec<NotificationData>)>> {
+) -> Result<Vec<(ClientId, Vec<NotificationData>)>> {
     if client_ids.is_empty() {
         return Ok(Vec::default());
     }
@@ -83,9 +83,7 @@ pub async fn read_client_notifications(
                     .captures(&key)
                     .and_then(|captures| captures.get(1).map(|m| m.as_str()))
                 {
-                    Some(client_id) => {
-                        result.push((Shard(*shard), ClientId(client_id.to_string()), val))
-                    }
+                    Some(client_id) => result.push((ClientId(client_id.to_string()), val)),
                     None => {
                         error!("Regex Match Failed For Key : {}, Shard : {}", key, shard);
                         continue;

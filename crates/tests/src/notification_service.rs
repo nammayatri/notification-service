@@ -429,4 +429,25 @@ mod tests {
         // Wait for all tasks to complete
         let _ = futures::future::join_all(task_handles).await;
     }
+
+    #[tokio::test]
+    async fn test_thread_sequence() {
+        let _guard = setup_tracing(LoggerConfig {
+            level: LogLevel::INFO,
+            log_to_file: false,
+        });
+
+        let mut task_handles = vec![];
+
+        for i in 0..100 {
+            let handle = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_nanos(i * 2)).await;
+                info!("Hello from thread : {}", i);
+            });
+            task_handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        let _ = futures::future::join_all(task_handles).await;
+    }
 }
