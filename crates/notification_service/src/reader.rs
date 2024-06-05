@@ -142,6 +142,7 @@ async fn client_reciever(
         }
         None => {
             warn!("[Client Disconnected] : {:?}", client_id);
+            CONNECTED_CLIENTS.dec();
             handle_client_disconnection_or_failure(clients_tx.clone(), shard, &client_id).await;
         }
     }
@@ -215,17 +216,20 @@ async fn read_and_process_notification(
                                     );
 
                                     if let Some(client_tx) = client_tx {
-                                        if let Err(err) = send_notification(
-                                            &client_id,
-                                            &client_tx,
-                                            notification.to_owned(),
-                                            &redis_pool_clone,
-                                            &shard,
-                                        )
-                                        .await
-                                        {
-                                            warn!("[Send Failed] : {}", err);
-                                        }
+                                        let (client_id_clone, client_tx_clone, redis_pool_clone, shard_clone ) = (client_id.clone(), client_tx.clone(), redis_pool_clone.clone(), shard.clone());
+                                        tokio::spawn(async move {
+                                            if let Err(err) = send_notification(
+                                                &client_id_clone,
+                                                &client_tx_clone,
+                                                notification.to_owned(),
+                                                &redis_pool_clone,
+                                                &shard_clone,
+                                            )
+                                            .await
+                                            {
+                                                warn!("[Send Failed] : {}", err);
+                                            }
+                                        });
                                     } else {
                                         warn!(
                                             "Client ({:?}) entry does not exist, client got disconnected intermittently.",

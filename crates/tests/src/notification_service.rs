@@ -16,6 +16,7 @@ mod tests {
     use notification_service::redis::keys::notification_client_key;
     use notification_service::redis::types::NotificationData;
     use notification_service::tools::logger::{error, info, setup_tracing, LogLevel, LoggerConfig};
+    use rand::Rng;
     use std::str::FromStr;
     use std::time::Duration;
     use std::{collections::HashMap, sync::Arc};
@@ -431,17 +432,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_thread_sequence() {
+    async fn parallel_thread_sequence_with_tokio() {
         let _guard = setup_tracing(LoggerConfig {
             level: LogLevel::INFO,
             log_to_file: false,
         });
 
         let mut task_handles = vec![];
+        let mut rng = rand::thread_rng();
 
         for i in 0..100 {
+            let delay = rng.gen_range(0..200); // Random delay between 0 and 200 nanoseconds
             let handle = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_nanos(i * 2)).await;
+                tokio::time::sleep(Duration::from_millis(delay)).await;
                 info!("Hello from thread : {}", i);
             });
             task_handles.push(handle);
