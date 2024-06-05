@@ -9,7 +9,8 @@
 
 use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
 use prometheus::{
-    histogram_opts, opts, register_histogram_vec, register_int_counter, HistogramVec, IntCounter,
+    histogram_opts, opts, register_histogram_vec, register_int_counter, register_int_gauge,
+    HistogramVec, IntCounter, IntGauge,
 };
 
 pub static MEASURE_DURATION: once_cell::sync::Lazy<HistogramVec> =
@@ -55,11 +56,10 @@ pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
         .expect("Failed to register notifiction latency metrics")
     });
 
-pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntCounter> =
-    once_cell::sync::Lazy::new(|| {
-        register_int_counter!("connected_clients", "Connected Clients")
-            .expect("Failed to register connected clients metrics")
-    });
+pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync::Lazy::new(|| {
+    register_int_gauge!("connected_clients", "Connected Clients")
+        .expect("Failed to register connected clients metrics")
+});
 
 pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
     once_cell::sync::Lazy::new(|| {

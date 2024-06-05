@@ -20,3 +20,4 @@ lazy_static = "1.4"
 
 shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "6c21852" }
 notification_service = { version = "0.1.0", path = "../notification_service" }
+rayon = "1.10.0"
