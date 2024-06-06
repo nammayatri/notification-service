@@ -17,6 +17,7 @@ use crate::{
     measure_latency_duration, notification_latency,
     redis::{
         commands::{clean_up_notification, read_client_notifications, set_notification_stream_id},
+        keys::notification_client_key,
         types::NotificationData,
     },
     tools::prometheus::{
@@ -97,13 +98,16 @@ async fn clear_expired_notification(
 
 #[macros::measure_duration]
 async fn handle_client_disconnection_or_failure(
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<Vec<RwLock<ReaderMap>>>>,
+    node: usize,
     shard: u64,
     client_id: &ClientId,
 ) {
     let handle_client_disconnection_or_failure_clients_tx_write_start_time =
         tokio::time::Instant::now();
     clients_tx
+        .get(node)
+        .unwrap()
         .get(shard as usize)
         .unwrap()
         .write()
@@ -119,10 +123,12 @@ async fn handle_client_disconnection_or_failure(
 async fn client_reciever(
     client_id: ClientId,
     client_tx: Option<ClientTx>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<Vec<RwLock<ReaderMap>>>>,
+    shard_to_node_id: Arc<FxHashMap<Shard, Node>>,
     max_shards: u64,
 ) {
-    let Shard(shard) = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
+    let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
+    let node = shard_to_node_id.get(&shard).unwrap();
     match client_tx {
         Some(client_tx) => {
             info!("[Client Connected] : {:?}", client_id);
@@ -130,8 +136,10 @@ async fn client_reciever(
 
             let client_reciever_clients_tx_write_start_time = tokio::time::Instant::now();
             clients_tx
-                .get(shard as usize)
-                .expect("This error is impossible!")
+                .get(node.inner())
+                .unwrap()
+                .get(shard.inner() as usize)
+                .unwrap()
                 .write()
                 .await
                 .insert(client_id, client_tx);
@@ -143,18 +151,32 @@ async fn client_reciever(
         None => {
             warn!("[Client Disconnected] : {:?}", client_id);
             CONNECTED_CLIENTS.dec();
-            handle_client_disconnection_or_failure(clients_tx.clone(), shard, &client_id).await;
+            handle_client_disconnection_or_failure(
+                clients_tx.clone(),
+                node.inner(),
+                shard.inner(),
+                &client_id,
+            )
+            .await;
         }
     }
 }
 
 async fn client_reciever_looper(
     mut read_notification_rx: UnboundedReceiver<(ClientId, Option<ClientTx>)>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<Vec<RwLock<ReaderMap>>>>,
+    shard_to_node_id: Arc<FxHashMap<Shard, Node>>,
     max_shards: u64,
 ) {
     while let Some((client_id, client_tx)) = read_notification_rx.recv().await {
-        client_reciever(client_id, client_tx, clients_tx.clone(), max_shards).await;
+        client_reciever(
+            client_id,
+            client_tx,
+            clients_tx.clone(),
+            shard_to_node_id.clone(),
+            max_shards,
+        )
+        .await;
     }
     error!("Error: read_notification_rx closed");
 }
@@ -162,102 +184,108 @@ async fn client_reciever_looper(
 #[macros::measure_duration]
 async fn read_and_process_notification(
     redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<Vec<RwLock<ReaderMap>>>>,
+    max_shards: u64,
 ) {
     let read_client_notifications_batch_task: Vec<_> = clients_tx
         .iter()
         .enumerate()
-        .map(|(shard, clients)| {
-            let shard = Shard(shard as u64);
-            let (redis_pool_clone, clients_tx_clone) = (redis_pool.clone(), clients_tx.clone());
+        .map(|(_node, shards)|{
+            let redis_pool_clone = redis_pool.clone();
             async move {
-                let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
-                    tokio::time::Instant::now();
-                let client_ids = clients
-                    .read()
-                    .await
-                    .iter()
-                    .map(|(client_id, _)| client_id.clone())
-                    .collect();
-                measure_latency_duration!(
-                    "read_client_notifications_parallely_in_batch_task_clients_tx_read",
-                    read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
-                );
+                let mut notification_stream_keys = Vec::new();
+                for (shard, clients) in shards.iter().enumerate() {
+                    let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
+                            tokio::time::Instant::now();
+                    let client_ids: Vec<ClientId> = clients
+                        .read()
+                        .await
+                        .iter()
+                        .map(|(client_id, _)| client_id.clone())
+                        .collect();
+                    measure_latency_duration!(
+                        "read_client_notifications_parallely_in_batch_task_clients_tx_read",
+                        read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
+                    );
+                    client_ids.iter().for_each(|client_id| {
+                        notification_stream_keys.push(notification_client_key(&client_id.inner(), &(shard as u64)));
+                    })
+                }
 
-                let notifications = read_client_notifications(&redis_pool_clone, client_ids, &shard).await;
+                        let notifications = read_client_notifications(&redis_pool_clone, notification_stream_keys, max_shards).await;
 
-                match notifications {
-                    Ok(notifications) => {
-                        for (ClientId(client_id), notifications) in notifications.into_iter() {
-                            for notification in notifications {
-                                TOTAL_NOTIFICATIONS.inc();
+                        match notifications {
+                            Ok(notifications) => {
+                                for (ClientId(client_id), notifications, shard) in notifications.into_iter() {
+                                    for notification in notifications {
+                                        TOTAL_NOTIFICATIONS.inc();
 
-                                if notification.ttl < Utc::now() {
-                                    clear_expired_notification(
-                                        &Arc::clone(&redis_pool_clone),
-                                        &shard.clone(),
-                                        &client_id,
-                                        &notification.stream_id.clone(),
-                                    )
-                                    .await;
-                                } else {
-                                    let read_and_process_notification_clients_tx_read_start_time =
-                                        tokio::time::Instant::now();
-                                    let client_tx = clients_tx_clone
-                                        .get(shard.inner() as usize)
-                                        .expect("This error is impossible!")
-                                        .read()
-                                        .await
-                                        .get(&ClientId(client_id.to_owned()))
-                                        .cloned();
-                                    measure_latency_duration!(
-                                        "read_and_process_notification_clients_tx_read",
-                                        read_and_process_notification_clients_tx_read_start_time
-                                    );
-
-                                    if let Some(client_tx) = client_tx {
-                                        let (client_id_clone, client_tx_clone, redis_pool_clone, shard_clone ) = (client_id.clone(), client_tx.clone(), redis_pool_clone.clone(), shard.clone());
-                                        tokio::spawn(async move {
-                                            if let Err(err) = send_notification(
-                                                &client_id_clone,
-                                                &client_tx_clone,
-                                                notification.to_owned(),
-                                                &redis_pool_clone,
-                                                &shard_clone,
+                                        if notification.ttl < Utc::now() {
+                                            clear_expired_notification(
+                                                &Arc::clone(&redis_pool_clone),
+                                                &shard.clone(),
+                                                &client_id,
+                                                &notification.stream_id.clone(),
                                             )
-                                            .await
-                                            {
-                                                warn!("[Send Failed] : {}", err);
+                                            .await;
+                                        } else {
+                                            let read_and_process_notification_clients_tx_read_start_time =
+                                                tokio::time::Instant::now();
+                                            let client_tx = shards
+                                                .get(shard.inner() as usize)
+                                                .unwrap()
+                                                .read()
+                                                .await
+                                                .get(&ClientId(client_id.to_owned()))
+                                                .cloned();
+                                            measure_latency_duration!(
+                                                "read_and_process_notification_clients_tx_read",
+                                                read_and_process_notification_clients_tx_read_start_time
+                                            );
+
+                                            if let Some(client_tx) = client_tx {
+                                                let (client_id_clone, client_tx_clone, redis_pool_clone, shard_clone ) = (client_id.clone(), client_tx.clone(), redis_pool_clone.clone(), shard.clone());
+                                                tokio::spawn(async move {
+                                                    if let Err(err) = send_notification(
+                                                        &client_id_clone,
+                                                        &client_tx_clone,
+                                                        notification.to_owned(),
+                                                        &redis_pool_clone,
+                                                        &shard_clone,
+                                                    )
+                                                    .await
+                                                    {
+                                                        warn!("[Send Failed] : {}", err);
+                                                    }
+                                                });
+                                            } else {
+                                                warn!(
+                                                    "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                                                    client_id
+                                                );
                                             }
-                                        });
-                                    } else {
-                                        warn!(
-                                            "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                                            client_id
-                                        );
+                                        }
                                     }
                                 }
+                            },
+                            Err(err) => {
+                                error!("read_client_notifications : {:?}", err);
                             }
                         }
-                    },
-                    Err(err) => {
-                        error!("read_client_notifications : {}", err);
-                    }
-                }
             }
-        })
-        .collect();
+        }).collect();
 
     join_all(read_client_notifications_batch_task).await;
 }
 
 async fn read_and_process_notification_looper(
     redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<Vec<RwLock<ReaderMap>>>>,
+    max_shards: u64,
     delay: Duration,
 ) {
     loop {
-        read_and_process_notification(redis_pool.clone(), clients_tx.clone()).await;
+        read_and_process_notification(redis_pool.clone(), clients_tx.clone(), max_shards).await;
         sleep(delay).await;
     }
 }
@@ -269,22 +297,43 @@ pub async fn run_notification_reader(
     redis_pool: Arc<RedisConnectionPool>,
     reader_delay_millis: u64,
     max_shards: u64,
+    node_to_shard: FxHashMap<String, Vec<u64>>,
 ) {
-    let clients_tx: Arc<Vec<RwLock<ReaderMap>>> = Arc::new(
-        (0..max_shards)
-            .map(|_| RwLock::new(FxHashMap::default()))
+    let clients_tx: Arc<Vec<Vec<RwLock<ReaderMap>>>> = Arc::new(
+        (0..node_to_shard.len())
+            .map(|_| {
+                (0..max_shards)
+                    .map(|_| RwLock::new(FxHashMap::default()))
+                    .collect()
+            })
             .collect(),
     );
+
+    error!("NODE TO SHARD => {:?}", node_to_shard);
+
+    let mut shard_to_node_id = FxHashMap::default();
+    for (node_id, shards) in node_to_shard.into_values().enumerate() {
+        for shard in shards.iter() {
+            shard_to_node_id
+                .entry(Shard(*shard))
+                .or_insert(Node(node_id));
+        }
+    }
+    let shard_to_node_id = Arc::new(shard_to_node_id);
+
+    error!("SHARD TO NODE ID => {:?}", shard_to_node_id);
 
     let rx_task = tokio::spawn(client_reciever_looper(
         read_notification_rx,
         clients_tx.clone(),
+        shard_to_node_id.clone(),
         max_shards,
     ));
 
     let process_notifications_task = tokio::spawn(read_and_process_notification_looper(
         redis_pool.clone(),
         clients_tx.clone(),
+        max_shards,
         Duration::from_millis(reader_delay_millis),
     ));
 

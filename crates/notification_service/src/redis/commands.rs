@@ -10,7 +10,7 @@ use super::{keys::*, types::NotificationData};
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, decode_stream},
+        utils::{abs_diff_utc_as_sec, decode_stream, hash_uuid},
     },
     measure_latency_duration,
     tools::prometheus::MEASURE_DURATION,
@@ -49,30 +49,27 @@ pub async fn get_client_id(
 #[macros::measure_duration]
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
-    client_ids: Vec<ClientId>,
-    Shard(shard): &Shard,
-) -> Result<Vec<(ClientId, Vec<NotificationData>)>> {
-    if client_ids.is_empty() {
+    client_stream_keys: Vec<String>,
+    max_shards: u64,
+) -> Result<Vec<(ClientId, Vec<NotificationData>, Shard)>> {
+    if client_stream_keys.is_empty() {
         return Ok(Vec::default());
     }
-
-    let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) = client_ids
-        .into_iter()
-        .map(|ClientId(client_id)| {
-            (
-                notification_client_key(&client_id, shard),
-                StreamEntry::default().inner(),
-            )
-        })
-        .unzip();
 
     let notifications = redis_pool
         .xread(
             client_stream_keys.to_owned(),
-            client_stream_ids.to_owned(),
+            (0..client_stream_keys.len())
+                .map(|_| StreamEntry::default().inner())
+                .collect(),
             None,
         )
-        .await?;
+        .await
+        .map_err(|err| {
+            error!("[XREAD ERROR] => {}", err.message());
+            err
+        })?;
+
     let notifications = decode_stream::<NotificationData>(notifications)?;
 
     let mut result = Vec::default();
@@ -83,18 +80,18 @@ pub async fn read_client_notifications(
                     .captures(&key)
                     .and_then(|captures| captures.get(1).map(|m| m.as_str()))
                 {
-                    Some(client_id) => result.push((ClientId(client_id.to_string()), val)),
+                    Some(client_id) => {
+                        let shard = Shard((hash_uuid(client_id) % max_shards as u128) as u64);
+                        result.push((ClientId(client_id.to_string()), val, shard))
+                    }
                     None => {
-                        error!("Regex Match Failed For Key : {}, Shard : {}", key, shard);
+                        error!("Regex Match Failed For Key : {}", key);
                         continue;
                     }
                 }
             }
             Err(err) => {
-                error!(
-                    "Regex Parsing Failed For Key : {}, Shard : {}, Error : {}",
-                    key, shard, err
-                );
+                error!("Regex Parsing Failed For Key : {}, Error : {}", key, err);
                 continue;
             }
         };

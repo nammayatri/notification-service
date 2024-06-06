@@ -84,6 +84,7 @@ pub async fn run_server() -> Result<()> {
         app_state.redis_pool.clone(),
         app_state.reader_delay_millis,
         app_state.max_shards,
+        app_state.node_to_shard.clone(),
     );
 
     let prometheus = prometheus_metrics();

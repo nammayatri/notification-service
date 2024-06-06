@@ -8,8 +8,9 @@
 #![allow(clippy::expect_used)]
 
 use reqwest::Url;
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
-use shared::redis::types::{RedisConnectionPool, RedisSettings};
+use shared::redis::types::{RedisClient, RedisConnectionPool, RedisSettings};
 use std::{sync::Arc, time::Duration};
 
 use crate::tools::logger::LoggerConfig;
@@ -37,6 +38,7 @@ pub struct AppConfig {
 #[derive(Clone)]
 pub struct AppState {
     pub redis_pool: Arc<RedisConnectionPool>,
+    pub node_to_shard: FxHashMap<String, Vec<u64>>,
     pub auth_url: Url,
     pub auth_api_key: String,
     pub auth_token_expiry: u32,
@@ -50,14 +52,24 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(app_config: AppConfig) -> AppState {
-        let redis_pool = Arc::new(
-            RedisConnectionPool::new(app_config.redis_cfg, None)
-                .await
-                .expect("Failed to create Redis connection pool"),
-        );
+        let redis_pool = RedisConnectionPool::new(app_config.redis_cfg.clone(), None)
+            .await
+            .expect("Failed to create Redis connection pool");
+
+        let mut redis_client = RedisClient::new(app_config.redis_cfg)
+            .await
+            .expect("Failed to create Redis client connection");
+
+        let node_to_shard = redis_client
+            .node_to_shard_mapping(app_config.max_shards)
+            .await
+            .expect("Failed to get node to shard mapping");
+
+        redis_client.close_connection().await;
 
         AppState {
-            redis_pool,
+            redis_pool: Arc::new(redis_pool),
+            node_to_shard,
             auth_url: Url::parse(app_config.internal_auth_cfg.auth_url.as_str())
                 .expect("Failed to parse auth_url."),
             auth_api_key: app_config.internal_auth_cfg.auth_api_key,

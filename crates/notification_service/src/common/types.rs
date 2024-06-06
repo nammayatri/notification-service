@@ -24,6 +24,10 @@ pub struct ClientId(pub String);
 #[macros::impl_getter]
 pub struct Shard(pub u64);
 
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, Hash, PartialEq)]
+#[macros::impl_getter]
+pub struct Node(pub usize);
+
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Hash)]
 #[macros::impl_getter]
 pub struct NotificationId(pub String);
