@@ -14,11 +14,12 @@ use crate::{
     middleware::request_response_tracking::RequestResponseTrackingMiddlewareLayer,
     notification_server::NotificationServer,
     reader::run_notification_reader,
-    tools::{logger::setup_tracing, prometheus::prometheus_metrics},
+    tools::prometheus::prometheus_metrics,
     NotificationPayload,
 };
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::{anyhow, Result};
+use shared::tools::logger::setup_tracing;
 use std::{
     env::var,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},

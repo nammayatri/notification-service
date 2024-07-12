@@ -12,7 +12,7 @@ use serde::Deserialize;
 use shared::redis::types::{RedisConnectionPool, RedisSettings};
 use std::{sync::Arc, time::Duration};
 
-use crate::tools::logger::LoggerConfig;
+use shared::tools::logger::LoggerConfig;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct InternalAuthConfig {

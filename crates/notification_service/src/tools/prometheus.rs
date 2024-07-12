@@ -7,20 +7,14 @@
 */
 #![allow(clippy::expect_used)]
 
-use actix_web_prom::{PrometheusMetrics, PrometheusMetricsBuilder};
+extern crate shared;
+
+use actix_web_prom::PrometheusMetrics;
 use prometheus::{
     histogram_opts, opts, register_histogram_vec, register_int_counter, register_int_gauge,
     HistogramVec, IntCounter, IntGauge,
 };
-
-pub static MEASURE_DURATION: once_cell::sync::Lazy<HistogramVec> =
-    once_cell::sync::Lazy::new(|| {
-        register_histogram_vec!(
-            opts!("measure_duration_seconds", "Measure Duration").into(),
-            &["function"]
-        )
-        .expect("Failed to register measure duration metrics")
-    });
+pub use shared::tools::prometheus::*;
 
 pub static NOTIFICATION_CLIENT_CONNECTION_DURATION: once_cell::sync::Lazy<HistogramVec> =
     once_cell::sync::Lazy::new(|| {
@@ -79,31 +73,12 @@ pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
             .expect("Failed to register expired notifications metrics")
     });
 
-pub static CALL_EXTERNAL_API: once_cell::sync::Lazy<HistogramVec> =
-    once_cell::sync::Lazy::new(|| {
-        register_histogram_vec!(
-            opts!("external_request_duration", "Call external API requests").into(),
-            &["method", "host", "service", "status"]
-        )
-        .expect("Failed to register call external API metrics")
-    });
-
 #[macro_export]
 macro_rules! notification_client_connection_duration {
     ($status:expr, $start:expr) => {
         let duration = $start.elapsed().as_secs_f64();
         NOTIFICATION_CLIENT_CONNECTION_DURATION
             .with_label_values(&[$status])
-            .observe(duration);
-    };
-}
-
-#[macro_export]
-macro_rules! measure_latency_duration {
-    ($function:expr, $start:expr) => {
-        let duration = $start.elapsed().as_secs_f64();
-        MEASURE_DURATION
-            .with_label_values(&[$function])
             .observe(duration);
     };
 }
@@ -127,16 +102,6 @@ macro_rules! notification_latency {
         let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
         NOTIFICATION_LATENCY
             .with_label_values(&[version.as_str(), $ack])
-            .observe(duration);
-    };
-}
-
-#[macro_export]
-macro_rules! call_external_api {
-    ($method:expr, $host:expr, $path:expr, $status:expr, $start:expr) => {
-        let duration = $start.elapsed().as_secs_f64();
-        CALL_EXTERNAL_API
-            .with_label_values(&[$method, $host, $path, $status])
             .observe(duration);
     };
 }
@@ -167,15 +132,7 @@ macro_rules! call_external_api {
 ///
 /// * If there's a failure initializing metrics, registering metrics to the Prometheus registry, or any other unexpected error during the setup.
 pub fn prometheus_metrics() -> PrometheusMetrics {
-    let prometheus = PrometheusMetricsBuilder::new("api")
-        .endpoint("/metrics")
-        .build()
-        .expect("Failed to create Prometheus Metrics");
-
-    prometheus
-        .registry
-        .register(Box::new(MEASURE_DURATION.to_owned()))
-        .expect("Failed to register measure duration");
+    let prometheus = init_prometheus_metrics();
 
     prometheus
         .registry
@@ -211,11 +168,6 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(EXPIRED_NOTIFICATIONS.to_owned()))
         .expect("Failed to register expired notifications metrics");
-
-    prometheus
-        .registry
-        .register(Box::new(CALL_EXTERNAL_API.to_owned()))
-        .expect("Failed to register call external API metrics");
 
     prometheus
 }

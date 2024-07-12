@@ -14,7 +14,7 @@ use crate::{
             transform_notification_data_to_payload,
         },
     },
-    measure_latency_duration, notification_latency,
+    notification_latency,
     redis::{
         commands::{clean_up_notification, read_client_notifications, set_notification_stream_id},
         types::NotificationData,
@@ -28,6 +28,7 @@ use anyhow::Result;
 use chrono::Utc;
 use futures::future::join_all;
 use rustc_hash::FxHashMap;
+use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
 use std::{sync::Arc, time::Duration};
 use tokio::{

@@ -9,14 +9,15 @@
 use std::{cmp::Ordering, str::FromStr};
 
 use crate::{
-    measure_latency_duration, redis::types::NotificationData, tools::error::AppError,
-    tools::prometheus::MEASURE_DURATION, Entity, NotificationPayload,
+    redis::types::NotificationData, tools::error::AppError, tools::prometheus::MEASURE_DURATION,
+    Entity, NotificationPayload,
 };
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use shared::measure_latency_duration;
 use tracing::*;
 use uuid::Uuid;
 

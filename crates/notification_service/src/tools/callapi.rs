@@ -6,12 +6,13 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use crate::{call_external_api, tools::prometheus::CALL_EXTERNAL_API};
+use crate::tools::prometheus::CALL_EXTERNAL_API;
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Client, Method, Response, Url,
 };
 use serde::{de::DeserializeOwned, Serialize};
+use shared::call_external_api;
 use std::{fmt::Debug, str::FromStr};
 use tracing::{error, info};
 

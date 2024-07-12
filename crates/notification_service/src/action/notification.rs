@@ -12,7 +12,7 @@ use crate::{
         utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
     },
     environment::AppState,
-    measure_latency_duration, notification_client_connection_duration, notification_latency,
+    notification_client_connection_duration, notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
     redis::commands::{get_client_id, get_notification_stream_id, set_client_id},
@@ -29,6 +29,7 @@ use anyhow::Result;
 use chrono::Utc;
 use futures::Stream;
 use reqwest::Url;
+use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
 use std::{env::var, pin::Pin};
 use tokio::{

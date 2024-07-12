@@ -15,8 +15,8 @@ mod tests {
     use notification_service::environment::{AppConfig, AppState};
     use notification_service::redis::keys::notification_client_key;
     use notification_service::redis::types::NotificationData;
-    use notification_service::tools::logger::{error, info, setup_tracing, LogLevel, LoggerConfig};
     use rand::Rng;
+    use shared::tools::logger::{error, info, setup_tracing, LogLevel, LoggerConfig};
     use std::str::FromStr;
     use std::time::Duration;
     use std::{collections::HashMap, sync::Arc};

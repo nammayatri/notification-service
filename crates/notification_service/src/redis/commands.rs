@@ -12,12 +12,12 @@ use crate::{
         types::*,
         utils::{abs_diff_utc_as_sec, decode_stream},
     },
-    measure_latency_duration,
     tools::prometheus::MEASURE_DURATION,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use regex::Regex;
+use shared::measure_latency_duration;
 use shared::redis::{error::RedisError, types::RedisConnectionPool};
 use std::cmp::{max, min};
 use tracing::*;
