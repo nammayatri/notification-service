@@ -218,7 +218,7 @@ async fn read_and_process_notification(
 
                                     if let Some(client_tx) = client_tx {
                                         let (client_id_clone, client_tx_clone, redis_pool_clone, shard_clone ) = (client_id.clone(), client_tx.clone(), redis_pool_clone.clone(), shard.clone());
-                                        tokio::spawn(async move {
+                                        // tokio::spawn(async move {
                                             if let Err(err) = send_notification(
                                                 &client_id_clone,
                                                 &client_tx_clone,
@@ -230,7 +230,7 @@ async fn read_and_process_notification(
                                             {
                                                 warn!("[Send Failed] : {}", err);
                                             }
-                                        });
+                                        // });
                                     } else {
                                         warn!(
                                             "Client ({:?}) entry does not exist, client got disconnected intermittently.",
