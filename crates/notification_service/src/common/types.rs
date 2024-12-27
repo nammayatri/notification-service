@@ -9,6 +9,7 @@ use crate::NotificationPayload;
 use chrono::{DateTime, Utc};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use strum_macros::{Display, EnumIter, EnumString};
 use tokio::sync::mpsc::Sender;
 use tonic::Status;
 
@@ -45,3 +46,13 @@ impl Default for StreamEntry {
 pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
 
 pub type ReaderMap = FxHashMap<ClientId, ClientTx>;
+
+#[derive(
+    Debug, Clone, EnumString, EnumIter, Display, Serialize, Deserialize, Eq, Hash, PartialEq,
+)]
+pub enum TokenOrigin {
+    DriverApp,
+    RiderApp,
+    DriverDashboard,
+    RiderDashboard,
+}

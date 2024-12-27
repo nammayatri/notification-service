@@ -31,7 +31,7 @@ use futures::Stream;
 use reqwest::Url;
 use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
-use std::{env::var, pin::Pin};
+use std::{env::var, pin::Pin, str::FromStr};
 use tokio::{
     sync::mpsc::{self, Sender, UnboundedSender},
     time::{timeout, Instant},
@@ -104,15 +104,27 @@ impl Notification for NotificationService {
                 "token (token - Header) not found".to_string(),
             ))?;
 
+        let token_origin = metadata
+            .get("token-origin")
+            .and_then(|origin| origin.to_str().ok())
+            .and_then(|origin| TokenOrigin::from_str(origin).ok())
+            .unwrap_or(TokenOrigin::DriverApp);
+
         let ClientId(client_id) = if var("DEV").is_ok() {
             ClientId(token.to_owned())
         } else {
+            let internal_auth_cfg = self.app_state.internal_auth_cfg.get(&token_origin).ok_or(
+                AppError::InternalError(format!(
+                    "InternalAuthConfig Not Found for TokenOrigin: {}",
+                    token_origin
+                )),
+            )?;
             get_client_id_from_bpp_authentication(
                 &self.app_state.redis_pool,
                 &token,
-                &self.app_state.auth_url,
-                &self.app_state.auth_api_key,
-                &self.app_state.auth_token_expiry,
+                &internal_auth_cfg.auth_url,
+                &internal_auth_cfg.auth_api_key,
+                &internal_auth_cfg.auth_token_expiry,
             )
             .await
             .map_err(|err| {
