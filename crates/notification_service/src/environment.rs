@@ -7,16 +7,17 @@
 */
 #![allow(clippy::expect_used)]
 
+use crate::common::types::TokenOrigin;
 use reqwest::Url;
 use serde::Deserialize;
 use shared::redis::types::{RedisConnectionPool, RedisSettings};
-use std::{sync::Arc, time::Duration};
-
 use shared::tools::logger::LoggerConfig;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct InternalAuthConfig {
-    pub auth_url: String,
+    #[serde(deserialize_with = "deserialize_url")]
+    pub auth_url: Url,
     pub auth_api_key: String,
     pub auth_token_expiry: u32,
 }
@@ -25,7 +26,7 @@ pub struct InternalAuthConfig {
 pub struct AppConfig {
     pub grpc_port: u16,
     pub http_server_port: u16,
-    pub internal_auth_cfg: InternalAuthConfig,
+    pub internal_auth_cfg: HashMap<TokenOrigin, InternalAuthConfig>,
     pub logger_cfg: LoggerConfig,
     pub redis_cfg: RedisSettings,
     pub reader_delay_millis: u64,
@@ -37,15 +38,21 @@ pub struct AppConfig {
 #[derive(Clone)]
 pub struct AppState {
     pub redis_pool: Arc<RedisConnectionPool>,
-    pub auth_url: Url,
-    pub auth_api_key: String,
-    pub auth_token_expiry: u32,
+    pub internal_auth_cfg: HashMap<TokenOrigin, InternalAuthConfig>,
     pub reader_delay_millis: u64,
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: Duration,
+}
+
+fn deserialize_url<'de, D>(deserializer: D) -> Result<Url, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    Url::parse(&s).map_err(serde::de::Error::custom)
 }
 
 impl AppState {
@@ -58,10 +65,7 @@ impl AppState {
 
         AppState {
             redis_pool,
-            auth_url: Url::parse(app_config.internal_auth_cfg.auth_url.as_str())
-                .expect("Failed to parse auth_url."),
-            auth_api_key: app_config.internal_auth_cfg.auth_api_key,
-            auth_token_expiry: app_config.internal_auth_cfg.auth_token_expiry,
+            internal_auth_cfg: app_config.internal_auth_cfg,
             reader_delay_millis: app_config.reader_delay_millis,
             grpc_port: app_config.grpc_port,
             http_server_port: app_config.http_server_port,

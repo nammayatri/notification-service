@@ -15,6 +15,4 @@ use crate::common::types::*;
 pub struct AuthResponseData {
     #[serde(rename = "driverId")]
     pub client_id: ClientId,
-    pub merchant_id: String,
-    pub merchant_operating_city_id: String,
 }
