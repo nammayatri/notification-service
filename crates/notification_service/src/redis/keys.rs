@@ -7,13 +7,14 @@
 */
 
 pub fn notification_client_key(client_id: &str, shard: &u64) -> String {
-    format!("notification:client-{}:{{{shard}}}", client_id)
+    // let (client_split, _) = client_id.split_at(13);
+    format!("N{}{{{shard}}}", client_id)
 }
 
 pub fn client_details_key(token: &str) -> String {
-    format!("notification:client_details:{token}")
+    format!("NS:{token}")
 }
 
 pub fn notification_stream_key(notification_id: &str) -> String {
-    format!("notifition:stream:{}", notification_id)
+    format!("NS:{}", notification_id)
 }

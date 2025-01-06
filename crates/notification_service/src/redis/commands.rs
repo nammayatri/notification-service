@@ -77,7 +77,7 @@ pub async fn read_client_notifications(
 
     let mut result = Vec::default();
     for (key, val) in notifications {
-        match Regex::new(r"client-([0-9a-fA-F-]+):") {
+        match Regex::new(r"N([0-9a-fA-F-]+)\{") {
             Ok(regex) => {
                 match regex
                     .captures(&key)
