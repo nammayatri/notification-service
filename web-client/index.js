@@ -1,79 +1,52 @@
-const grpc = require("@grpc/grpc-js");
-const protoLoader = require("@grpc/proto-loader");
+const { NotificationAck } = require("./generated/notification_service_pb.js");
+const {
+  NotificationClient,
+} = require("./generated/notification_service_grpc_web_pb.js");
 
-// Path to your `.proto` file
-const PROTO_PATH =
-  "../crates/notification_service/protos/notification_service.proto";
-
-// Load `.proto` file dynamically
-const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
-  keepCase: true,
-  longs: String,
-  enums: String,
-  defaults: true,
-  oneofs: true,
-});
-
-// Load gRPC package
-const notificationProto =
-  grpc.loadPackageDefinition(packageDefinition).notification_service;
-
-let client = null;
-let stream = null;
-
-const connect = () => {
-  // Ensure previous stream is properly closed before reconnecting
-  if (stream) {
-    console.log("Closing previous stream before reconnecting...");
-    stream.cancel();
+// ✅ Use correct gRPC-Web endpoint with `https://`
+const notificationService = new NotificationClient(
+  "https://beta.beckn.uat.juspay.net:50051",
+  null,
+  {
+    withCredentials: true, // Ensure no CORS credential issues
   }
+);
 
-  // Ensure previous client is closed
-  if (client) {
-    console.log("Closing previous client connection...");
-    client.close();
-  }
+// ✅ Create the metadata correctly
+const metadata = {
+  "token-origin": "DriverDashboard",
+  token: "618da5ec-c349-4715-8537-f5ca0bba8a5f",
+};
 
-  // Create a new gRPC client
-  client = new notificationProto.Notification(
-    "beta.beckn.uat.juspay.net:50051",
-    grpc.credentials.createSsl()
-  );
+// ✅ Prepare the initial request
+const request = new NotificationAck();
+request.setId("0-0");
 
-  const metadata = new grpc.Metadata();
-  metadata.add("token-origin", "DriverDashboard");
-  metadata.add("token", "f62718f5-e2ac-4334-9b98-65b4438c8890");
+const startStream = () => {
+  // ✅ Start gRPC-Web streaming correctly
+  const stream = notificationService.streamPayload(request, metadata);
 
-  console.log("Establishing new gRPC connection...");
-  stream = client.StreamPayload(metadata);
-
-  // Handle incoming notifications
   stream.on("data", (response) => {
-    console.log("Received notification:", response);
-
-    // Send acknowledgment
-    stream.write({ id: response.id });
+    console.log("📩 Received Notification:", response.toObject());
   });
 
-  stream.on("end", () => {
-    console.log("Stream ended. Reconnecting...");
-    connect();
+  stream.on("status", (status) => {
+    console.log("🔄 Stream Status:", status);
   });
 
+  // ✅ Handle errors properly
   stream.on("error", (err) => {
-    console.error("Stream error:", err);
+    console.error("❌ Stream Error:", err);
+  });
 
-    if (
-      err.code === grpc.status.UNAVAILABLE ||
-      err.code === grpc.status.INTERNAL
-    ) {
-      console.log("Stream error. Reconnecting...");
-      connect();
-    } else {
-      console.log("Unexpected error.", err);
-    }
+  // ✅ Handle when stream ends
+  stream.on("end", () => {
+    console.log("🔄 Stream Ended. Reconnecting...");
+    setTimeout(() => {
+      console.log("♻️ Reconnecting...");
+      startStream(); // Automatically restart the stream
+    }, 5000);
   });
 };
 
-// Start the connection
-connect();
+startStream();

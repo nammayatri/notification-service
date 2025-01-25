@@ -101,6 +101,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn generate_notifications() -> anyhow::Result<()> {
+        let _guard = setup_tracing(LoggerConfig {
+            level: LogLevel::INFO,
+            log_to_file: false,
+        });
+
+        if let Ok(current_dir) = std::env::current_dir() {
+            info!("Current working directory: {}", current_dir.display());
+        } else {
+            error!("Failed to get the current working directory");
+        }
+
+        let dhall_config_path = "../../dhall-configs/dev/notification_service.dhall".to_string();
+        let app_config = serde_dhall::from_file(dhall_config_path).parse::<AppConfig>()?;
+
+        let app_state = AppState::new(app_config).await;
+
+        let _ = generate_and_add_notifications(
+            app_state.clone(),
+            "5e4ad34f-a2be-45b7-9fb5-76aba43628ca".to_string(),
+        )
+        .await;
+
+        Ok(())
+    }
+
     async fn generate_and_add_notifications(
         app_state: AppState,
         client_id: String,
