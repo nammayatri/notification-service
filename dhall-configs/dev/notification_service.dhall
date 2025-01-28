@@ -48,5 +48,7 @@ in {
     reader_delay_millis = 100,
     max_shards = +5,
     channel_buffer = 100000,
+    redis_retry_bucket_expiry = 7210,
+    redis_retry_key_window = 3600,
     request_timeout_seconds = 60
 }

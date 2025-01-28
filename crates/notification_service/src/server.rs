@@ -15,7 +15,6 @@ use crate::{
     notification_server::NotificationServer,
     reader::run_notification_reader,
     tools::prometheus::prometheus_metrics,
-    NotificationPayload,
 };
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::{anyhow, Result};
@@ -27,11 +26,11 @@ use std::{
 use tokio::{
     signal::unix::{signal, SignalKind},
     sync::{
-        mpsc::{self, Sender, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
 };
-use tonic::{transport::Server, Status};
+use tonic::transport::Server;
 use tracing::*;
 
 pub async fn run_server() -> Result<()> {
@@ -47,19 +46,13 @@ pub async fn run_server() -> Result<()> {
         error!("Panic Occured : {:?}", panic_info);
         panic!("Panic Occured : {:?}", panic_info);
     }));
-
+    let redis_retry_bucket_expiry = app_config.redis_retry_bucket_expiry;
+    let redis_retry_key_window = app_config.redis_retry_key_window;
     let app_state = AppState::new(app_config).await;
-
     #[allow(clippy::type_complexity)]
     let (read_notification_tx, read_notification_rx): (
-        UnboundedSender<(
-            ClientId,
-            Option<Sender<Result<NotificationPayload, Status>>>,
-        )>,
-        UnboundedReceiver<(
-            ClientId,
-            Option<Sender<Result<NotificationPayload, Status>>>,
-        )>,
+        UnboundedSender<(ClientId, SenderType)>,
+        UnboundedReceiver<(ClientId, SenderType)>,
     ) = mpsc::unbounded_channel();
 
     let (signal_tx, signal_rx) = oneshot::channel();
@@ -78,13 +71,14 @@ pub async fn run_server() -> Result<()> {
             }
         }
     });
-
     let read_notification_thread = run_notification_reader(
         read_notification_rx,
         signal_rx,
         app_state.redis_pool.clone(),
         app_state.reader_delay_millis,
         app_state.max_shards,
+        redis_retry_bucket_expiry,
+        redis_retry_key_window,
     );
 
     let prometheus = prometheus_metrics();

@@ -33,6 +33,8 @@ pub struct AppConfig {
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: u64,
+    pub redis_retry_bucket_expiry: u64,
+    pub redis_retry_key_window: u64,
 }
 
 #[derive(Clone)]

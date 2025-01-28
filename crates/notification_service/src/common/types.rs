@@ -37,6 +37,22 @@ pub struct Timestamp(pub DateTime<Utc>);
 #[macros::impl_getter]
 pub struct StreamEntry(pub String);
 
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, Hash, PartialEq)]
+#[macros::impl_getter]
+pub struct ActiveNotificationCounter(pub u64);
+
+impl ActiveNotificationCounter {
+    pub fn increment(&mut self, num: u64) {
+        self.0 += num;
+    }
+    pub fn decrement(&mut self, num: u64) {
+        self.0 -= num;
+    }
+    pub fn reset(&mut self) {
+        self.0 = 0;
+    }
+}
+
 impl Default for StreamEntry {
     fn default() -> Self {
         Self("0-0".to_string())
@@ -45,7 +61,12 @@ impl Default for StreamEntry {
 
 pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
 
-pub type ReaderMap = FxHashMap<ClientId, ClientTx>;
+pub enum SenderType {
+    ClientConnection(Option<ClientTx>),
+    ClientAck,
+}
+
+pub type ReaderMap = FxHashMap<ClientId, (ActiveNotificationCounter, ClientTx)>;
 
 #[derive(
     Debug, Clone, EnumString, EnumIter, Display, Serialize, Deserialize, Eq, Hash, PartialEq,
