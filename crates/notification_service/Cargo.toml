@@ -54,8 +54,8 @@ regex = "1.10.3"
 dashmap = "5.5.3"
 console-subscriber = "0.2.0"
 
-macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "9bc670d" }
-shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "9bc670d" }
+macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "31e7530" }
+shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "31e7530" }
 # shared = { path = "/Users/khuzema.khomosi/Documents/shared-kernel-rs/crates/shared" }
 
 [build-dependencies]

@@ -33,7 +33,7 @@ use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
 use std::{env::var, pin::Pin, str::FromStr};
 use tokio::{
-    sync::mpsc::{self, Sender, UnboundedSender},
+    sync::mpsc::{self, UnboundedSender},
     time::{timeout, Instant},
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -42,20 +42,14 @@ use tracing::*;
 
 #[allow(clippy::type_complexity)]
 pub struct NotificationService {
-    read_notification_tx: UnboundedSender<(
-        ClientId,
-        Option<Sender<Result<NotificationPayload, Status>>>,
-    )>,
+    read_notification_tx: UnboundedSender<(ClientId, SenderType)>,
     app_state: AppState,
 }
 
 impl NotificationService {
     #[allow(clippy::type_complexity)]
     pub fn new(
-        read_notification_tx: UnboundedSender<(
-            ClientId,
-            Option<Sender<Result<NotificationPayload, Status>>>,
-        )>,
+        read_notification_tx: UnboundedSender<(ClientId, SenderType)>,
         app_state: AppState,
     ) -> Self {
         NotificationService {
@@ -144,10 +138,10 @@ impl Notification for NotificationService {
         );
 
         let add_client_tx_start_time = Instant::now();
-        if let Err(err) = read_notification_tx
-            .clone()
-            .send((ClientId(client_id.to_owned()), Some(client_tx)))
-        {
+        if let Err(err) = read_notification_tx.clone().send((
+            ClientId(client_id.to_owned()),
+            SenderType::ClientConnection(Some(client_tx)),
+        )) {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
                 client_id, err
@@ -187,33 +181,40 @@ impl Notification for NotificationService {
                                     error!("Error in getting Notification Stream Id : {:?}", err);
                                 }
                             }
-
-                            DELIVERED_NOTIFICATIONS.inc();
-                        }
-                        Ok(None) => {
-                            info!("Client ({}) Disconnected", client_id);
-                            notification_client_connection_duration!("DISCONNECTED", start_time);
-                            if let Err(err) = read_notification_tx
-                                .clone()
-                                .send((ClientId(client_id.to_owned()), None))
+                            if let Err(err) = read_notification_tx_clone
+                                .send((ClientId(client_id_clone.to_owned()), SenderType::ClientAck))
                             {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
-                                    client_id, err
+                                    client_id_clone, err
+                                );
+                            }
+                            DELIVERED_NOTIFICATIONS.inc();
+                        }
+                        Ok(None) => {
+                            info!("Client ({}) Disconnected", client_id_clone);
+                            notification_client_connection_duration!("DISCONNECTED", start_time);
+                            if let Err(err) = read_notification_tx_clone.send((
+                                ClientId(client_id_clone.to_owned()),
+                                SenderType::ClientConnection(None),
+                            )) {
+                                error!(
+                                    "Failed to remove client's ({:?}) instance from Reader : {:?}",
+                                    client_id_clone, err
                                 );
                             }
                             break;
                         }
                         Err(err) => {
-                            info!("Client ({}) Disconnected : {}", client_id, err);
+                            info!("Client ({}) Disconnected : {}", client_id_clone, err);
                             notification_client_connection_duration!("DISCONNECTED", start_time);
-                            if let Err(err) = read_notification_tx
-                                .clone()
-                                .send((ClientId(client_id.to_owned()), None))
-                            {
+                            if let Err(err) = read_notification_tx_clone.send((
+                                ClientId(client_id_clone.to_owned()),
+                                SenderType::ClientConnection(None),
+                            )) {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
-                                    client_id, err
+                                    client_id_clone, err
                                 );
                             }
                             break;
@@ -223,11 +224,15 @@ impl Notification for NotificationService {
             })
             .await
             {
+                let (read_notification_tx_clone, client_id_clone) =
+                    (read_notification_tx.clone(), client_id.clone());
+
                 info!("Client ({}) Timed Out : {}", client_id_clone, err);
                 notification_client_connection_duration!("TIMED_OUT", start_time);
-                if let Err(err) =
-                    read_notification_tx_clone.send((ClientId(client_id_clone.to_owned()), None))
-                {
+                if let Err(err) = read_notification_tx_clone.send((
+                    ClientId(client_id_clone.to_owned()),
+                    SenderType::ClientConnection(None),
+                )) {
                     error!(
                         "Failed to remove client's ({:?}) instance from Reader : {:?}",
                         client_id_clone, err
