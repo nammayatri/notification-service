@@ -80,8 +80,8 @@ proto.notification_service.NotificationPromiseClient =
  *   !proto.notification_service.NotificationAck,
  *   !proto.notification_service.NotificationPayload>}
  */
-const methodDescriptor_Notification_StreamPayload = new grpc.web.MethodDescriptor(
-  '/notification_service.Notification/StreamPayload',
+const methodDescriptor_Notification_ServerStreamPayload = new grpc.web.MethodDescriptor(
+  '/notification_service.Notification/ServerStreamPayload',
   grpc.web.MethodType.SERVER_STREAMING,
   proto.notification_service.NotificationAck,
   proto.notification_service.NotificationPayload,
@@ -103,13 +103,13 @@ const methodDescriptor_Notification_StreamPayload = new grpc.web.MethodDescripto
  * @return {!grpc.web.ClientReadableStream<!proto.notification_service.NotificationPayload>}
  *     The XHR Node Readable Stream
  */
-proto.notification_service.NotificationClient.prototype.streamPayload =
+proto.notification_service.NotificationClient.prototype.serverStreamPayload =
     function(request, metadata) {
   return this.client_.serverStreaming(this.hostname_ +
-      '/notification_service.Notification/StreamPayload',
+      '/notification_service.Notification/ServerStreamPayload',
       request,
       metadata || {},
-      methodDescriptor_Notification_StreamPayload);
+      methodDescriptor_Notification_ServerStreamPayload);
 };
 
 
@@ -120,13 +120,13 @@ proto.notification_service.NotificationClient.prototype.streamPayload =
  * @return {!grpc.web.ClientReadableStream<!proto.notification_service.NotificationPayload>}
  *     The XHR Node Readable Stream
  */
-proto.notification_service.NotificationPromiseClient.prototype.streamPayload =
+proto.notification_service.NotificationPromiseClient.prototype.serverStreamPayload =
     function(request, metadata) {
   return this.client_.serverStreaming(this.hostname_ +
-      '/notification_service.Notification/StreamPayload',
+      '/notification_service.Notification/ServerStreamPayload',
       request,
       metadata || {},
-      methodDescriptor_Notification_StreamPayload);
+      methodDescriptor_Notification_ServerStreamPayload);
 };
 
 

@@ -34,7 +34,7 @@ use shared::redis::types::RedisConnectionPool;
 use std::{env::var, pin::Pin, str::FromStr};
 use tokio::{
     sync::mpsc::{self, UnboundedSender},
-    time::{timeout, Instant},
+    time::{sleep, timeout, Instant},
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{metadata::MetadataMap, Request, Response, Status};
@@ -81,6 +81,98 @@ async fn get_client_id_from_bpp_authentication(
 impl Notification for NotificationService {
     type StreamPayloadStream =
         Pin<Box<dyn Stream<Item = Result<NotificationPayload, Status>> + Send + Sync>>;
+
+    type ServerStreamPayloadStream =
+        Pin<Box<dyn Stream<Item = Result<NotificationPayload, Status>> + Send + Sync>>;
+
+    #[allow(unused_variables)]
+    async fn server_stream_payload(
+        &self,
+        request: Request<NotificationAck>,
+    ) -> Result<Response<Self::ServerStreamPayloadStream>, Status> {
+        let start_time = Instant::now();
+
+        let metadata: &MetadataMap = request.metadata();
+        let token = metadata
+            .get("token")
+            .and_then(|token| token.to_str().ok())
+            .map(|token| token.to_string())
+            .ok_or(AppError::InvalidRequest(
+                "token (token - Header) not found".to_string(),
+            ))?;
+
+        let token_origin = metadata
+            .get("token-origin")
+            .and_then(|origin| origin.to_str().ok())
+            .and_then(|origin| TokenOrigin::from_str(origin).ok())
+            .unwrap_or(TokenOrigin::DriverApp);
+
+        let ClientId(client_id) = if var("DEV").is_ok() {
+            ClientId(token.to_owned())
+        } else {
+            let internal_auth_cfg = self.app_state.internal_auth_cfg.get(&token_origin).ok_or(
+                AppError::InternalError(format!(
+                    "InternalAuthConfig Not Found for TokenOrigin: {}",
+                    token_origin
+                )),
+            )?;
+            get_client_id_from_bpp_authentication(
+                &self.app_state.redis_pool,
+                &token,
+                &internal_auth_cfg.auth_url,
+                &internal_auth_cfg.auth_api_key,
+                &internal_auth_cfg.auth_token_expiry,
+            )
+            .await
+            .map_err(|err| {
+                AppError::InternalError(format!("Internal Authentication Failed : {:?}", err))
+            })?
+        };
+
+        info!("Connection Successful - ClientId : {client_id} - token : {token}");
+
+        let (client_tx, client_rx) = mpsc::channel(self.app_state.channel_buffer);
+
+        let (redis_pool, read_notification_tx, max_shards, request_timeout_seconds) = (
+            self.app_state.redis_pool.clone(),
+            self.read_notification_tx.clone(),
+            self.app_state.max_shards,
+            self.app_state.request_timeout_seconds,
+        );
+
+        let add_client_tx_start_time = Instant::now();
+        if let Err(err) = read_notification_tx.clone().send((
+            ClientId(client_id.to_owned()),
+            SenderType::ClientConnection(Some(client_tx)),
+        )) {
+            error!(
+                "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
+                client_id, err
+            );
+        }
+        measure_latency_duration!("add_client_tx", add_client_tx_start_time);
+
+        tokio::spawn(async move {
+            sleep(request_timeout_seconds).await;
+
+            let (read_notification_tx_clone, client_id_clone) =
+                (read_notification_tx.clone(), client_id.clone());
+
+            info!("Client ({}) Timed Out", client_id_clone);
+            notification_client_connection_duration!("TIMED_OUT", start_time);
+            if let Err(err) = read_notification_tx_clone.send((
+                ClientId(client_id_clone.to_owned()),
+                SenderType::ClientConnection(None),
+            )) {
+                error!(
+                    "Failed to remove client's ({:?}) instance from Reader : {:?}",
+                    client_id_clone, err
+                );
+            }
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(client_rx))))
+    }
 
     #[allow(unused_variables)]
     async fn stream_payload(

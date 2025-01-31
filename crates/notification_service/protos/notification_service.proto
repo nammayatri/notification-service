@@ -28,4 +28,7 @@ message NotificationPayload {
 service Notification {
   // The RPC method for streaming notifications based on acknowledgments
   rpc StreamPayload(stream NotificationAck) returns (stream NotificationPayload);
+
+  // The RPC method for server side streaming notifications without acknowledgments
+  rpc ServerStreamPayload(NotificationAck) returns (stream NotificationPayload);
 }

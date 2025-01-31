@@ -5,7 +5,7 @@ const {
 
 // ✅ Use correct gRPC-Web endpoint with `https://`
 const notificationService = new NotificationClient(
-  "https://beta.beckn.uat.juspay.net:50051",
+  "https://grpc.sandbox.moving.tech:50051",
   null,
   {
     withCredentials: true, // Ensure no CORS credential issues
@@ -15,7 +15,7 @@ const notificationService = new NotificationClient(
 // ✅ Create the metadata correctly
 const metadata = {
   "token-origin": "DriverDashboard",
-  token: "618da5ec-c349-4715-8537-f5ca0bba8a5f",
+  token: "d8a51bfb-0b17-433c-a6db-6bb2c045d599",
 };
 
 // ✅ Prepare the initial request
@@ -24,7 +24,7 @@ request.setId("0-0");
 
 const startStream = () => {
   // ✅ Start gRPC-Web streaming correctly
-  const stream = notificationService.streamPayload(request, metadata);
+  const stream = notificationService.serverStreamPayload(request, metadata);
 
   stream.on("data", (response) => {
     console.log("📩 Received Notification:", response.toObject());
@@ -37,6 +37,10 @@ const startStream = () => {
   // ✅ Handle errors properly
   stream.on("error", (err) => {
     console.error("❌ Stream Error:", err);
+    setTimeout(() => {
+      console.log("♻️ Reconnecting...");
+      startStream(); // Automatically restart the stream
+    }, 1000);
   });
 
   // ✅ Handle when stream ends
@@ -45,7 +49,7 @@ const startStream = () => {
     setTimeout(() => {
       console.log("♻️ Reconnecting...");
       startStream(); // Automatically restart the stream
-    }, 5000);
+    }, 1000);
   });
 };
 
