@@ -10,8 +10,8 @@ use crate::{
     common::{
         types::*,
         utils::{
-            abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid,
-            transform_notification_data_to_payload,
+            abs_diff_utc_as_sec, get_bucket_from_timestamp, get_timestamp_from_stream_id,
+            hash_uuid, transform_notification_data_to_payload,
         },
     },
     notification_latency,
@@ -20,7 +20,7 @@ use crate::{
             clean_up_notification, handle_retry_clients, read_client_notifications,
             set_notification_stream_id,
         },
-        keys::pubsub_channel_key,
+        keys::{pubsub_channel_key, retry_bucket_key},
         types::NotificationData,
     },
     tools::prometheus::{
@@ -151,13 +151,12 @@ async fn client_reciever(
             handle_client_disconnection_or_failure(clients_tx.clone(), shard, &client_id).await;
         }
         SenderType::ClientAck => {
-            let mut clients_map = clients_tx
+            if let Some((active_notification, _sender)) = clients_tx
                 .get(shard as usize)
                 .expect("This error is impossible")
                 .write()
-                .await;
-            if let Some((active_notification, _sender)) =
-                clients_map.get_mut(&ClientId(client_id.inner().clone()))
+                .await
+                .get_mut(&ClientId(client_id.inner().clone()))
             {
                 active_notification.decrement(1);
             } else {
@@ -165,10 +164,6 @@ async fn client_reciever(
             }
         }
     }
-}
-
-pub fn get_bucket_from_timestamp(bucket_expiry_in_seconds: &u64, ts: u64) -> u64 {
-    ts / bucket_expiry_in_seconds
 }
 
 async fn client_reciever_looper(
@@ -189,6 +184,7 @@ async fn client_reciever_looper(
 async fn read_and_process_notification(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    read_all_connected_client_notifications: bool,
 ) {
     let read_client_notifications_batch_task: Vec<_> = clients_tx
         .iter()
@@ -199,13 +195,15 @@ async fn read_and_process_notification(
             async move {
                 let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
                     tokio::time::Instant::now();
+
                 let client_ids = clients
                     .read()
                     .await
                     .iter()
-                    .filter(|(_, (active_notification, _))| active_notification.inner() > 0)
+                    .filter(|(_, (active_notification, _))| read_all_connected_client_notifications || active_notification.inner() > 0)
                     .map(|(client_id, _)| client_id.clone())
                     .collect();
+
                 measure_latency_duration!(
                     "read_client_notifications_parallely_in_batch_task_clients_tx_read",
                     read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
@@ -216,9 +214,9 @@ async fn read_and_process_notification(
                 match notifications {
                     Ok(notifications) => {
                         for (ClientId(client_id), notifications) in notifications.into_iter() {
+                            // Self Healing: In case any inconsistencies caused in Count, it can safely get reset if Notifications are empty.
                             if notifications.is_empty() {
-                                let mut client_tx_map = clients_tx_clone.get(shard.inner() as usize).expect("This error is impossible!").write().await;
-                                match client_tx_map.get_mut(&ClientId(client_id.clone())) {
+                                match clients_tx_clone.get(shard.inner() as usize).expect("This error is impossible!").write().await.get_mut(&ClientId(client_id.clone())) {
                                     Some((active_notification, _sender)) => {
                                         active_notification.reset();
                                     }
@@ -228,6 +226,7 @@ async fn read_and_process_notification(
                                 }
                                 continue;
                             }
+
                             for notification in notifications {
                                 TOTAL_NOTIFICATIONS.inc();
 
@@ -294,10 +293,16 @@ async fn read_and_process_notification(
 async fn read_and_process_notification_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    read_all_connected_client_notifications: bool,
     delay: Duration,
 ) {
     loop {
-        read_and_process_notification(redis_pool.clone(), clients_tx.clone()).await;
+        read_and_process_notification(
+            redis_pool.clone(),
+            clients_tx.clone(),
+            read_all_connected_client_notifications,
+        )
+        .await;
         sleep(delay).await;
     }
 }
@@ -308,17 +313,15 @@ async fn update_active_notification(
     max_shards: u64,
 ) {
     loop {
-        let res = active_notification_receiver_stream.recv().await;
-        match res {
+        match active_notification_receiver_stream.recv().await {
             Some((_channel_name, client_id)) => {
                 let Shard(shard) = Shard((hash_uuid(&client_id) % max_shards as u128) as u64);
-                let mut clients_map = clients_tx
+                if let Some((active_notification, _client_tx)) = clients_tx
                     .get(shard as usize)
-                    .expect("This error is impossible")
+                    .expect("This error is impossible!")
                     .write()
-                    .await;
-                if let Some((active_notification, _client_tx)) =
-                    clients_map.get_mut(&ClientId(client_id.clone()))
+                    .await
+                    .get_mut(&ClientId(client_id.clone()))
                 {
                     active_notification.increment(1);
                     info!(
@@ -326,7 +329,7 @@ async fn update_active_notification(
                         client_id
                     );
                 } else {
-                    info!("ClientId {} not found here", client_id);
+                    info!("ClientId {} not found here.", client_id);
                 }
             }
             None => error!("Issue found in the active notification receiver stream."),
@@ -340,38 +343,41 @@ async fn update_active_notification_looper(
     max_shards: u64,
 ) {
     let pubsub_channel_key = pubsub_channel_key();
-    let mut active_notification_receiver_stream = redis_pool
+    if let Ok(mut active_notification_receiver_stream) = redis_pool
         .subscribe_channel_as_str(pubsub_channel_key)
         .await
-        .unwrap();
-    update_active_notification(
-        clients_tx.clone(),
-        &mut active_notification_receiver_stream,
-        max_shards,
-    )
-    .await;
+    {
+        update_active_notification(
+            clients_tx.clone(),
+            &mut active_notification_receiver_stream,
+            max_shards,
+        )
+        .await;
+    }
 }
 
-async fn transfer_clients_to_redis(
+async fn transfer_clients_state_to_redis(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     redis_pool: Arc<RedisConnectionPool>,
     redis_retry_key_window: u64,
     redis_retry_bucket_expiry: u64,
 ) {
-    let redis_retry_bucket_key =
-        (Utc::now().timestamp() as u64 / redis_retry_key_window).to_string();
     let mut result: Vec<(String, u64)> = Vec::new();
     for rwlock in clients_tx.iter() {
         let reader_map = rwlock.read().await;
         for (client_id, (counter, _)) in reader_map.iter() {
             if counter.inner() > 0 {
-                result.push((client_id.clone().inner(), counter.inner()));
+                result.push((client_id.inner(), counter.inner()));
             }
         }
     }
+
     let _ = redis_pool
         .set_hash_fields_with_hashmap_expiry(
-            &redis_retry_bucket_key,
+            &retry_bucket_key(get_bucket_from_timestamp(
+                &redis_retry_key_window,
+                Utc::now().timestamp() as u64,
+            )),
             result,
             redis_retry_bucket_expiry as i64,
         )
@@ -385,6 +391,7 @@ pub async fn run_notification_reader(
     redis_pool: Arc<RedisConnectionPool>,
     reader_delay_millis: u64,
     max_shards: u64,
+    read_all_connected_client_notifications: bool,
     redis_retry_bucket_expiry: u64,
     redis_retry_key_window: u64,
 ) {
@@ -411,8 +418,10 @@ pub async fn run_notification_reader(
     let process_notifications_task = tokio::spawn(read_and_process_notification_looper(
         redis_pool.clone(),
         clients_tx.clone(),
+        read_all_connected_client_notifications,
         Duration::from_millis(reader_delay_millis),
     ));
+
     tokio::select!(
         res = rx_task => {
             error!("[CLIENT_RECIEVER_TASK] : {:?}", res);
@@ -425,7 +434,7 @@ pub async fn run_notification_reader(
         },
         _ = graceful_termination_signal_rx => {
             error!("[Graceful Shutting Down]");
-            transfer_clients_to_redis(clients_tx.clone(),redis_pool,redis_retry_key_window,redis_retry_bucket_expiry).await;
+            transfer_clients_state_to_redis(clients_tx.clone(), redis_pool, redis_retry_key_window, redis_retry_bucket_expiry).await;
         }
     );
 }

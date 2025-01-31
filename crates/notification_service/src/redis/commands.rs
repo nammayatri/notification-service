@@ -10,7 +10,7 @@ use super::{keys::*, types::NotificationData};
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, decode_stream, hash_uuid},
+        utils::{abs_diff_utc_as_sec, decode_stream, get_bucket_from_timestamp, hash_uuid},
     },
     tools::prometheus::MEASURE_DURATION,
 };
@@ -150,24 +150,20 @@ pub async fn clean_up_notification(
     Ok(())
 }
 
-pub fn get_bucket_from_timestamp(bucket_expiry_in_seconds: &u64, ts: u64) -> u64 {
-    ts / bucket_expiry_in_seconds
-}
-
 pub async fn handle_retry_clients(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
     redis_retry_key_window: u64,
 ) {
-    let redis_retry_bucket_key_current =
-        get_bucket_from_timestamp(&redis_retry_key_window, Utc::now().timestamp() as u64)
-            .to_string();
-    let redis_retry_bucket_key_prev = get_bucket_from_timestamp(
+    let redis_retry_bucket_key_current = retry_bucket_key(get_bucket_from_timestamp(
         &redis_retry_key_window,
-        (Utc::now().timestamp() as u64) - redis_retry_key_window,
-    )
-    .to_string();
+        Utc::now().timestamp() as u64,
+    ));
+    let redis_retry_bucket_key_prev = retry_bucket_key(get_bucket_from_timestamp(
+        &redis_retry_key_window,
+        Utc::now().timestamp() as u64 - redis_retry_key_window,
+    ));
     let redis_retry_bucket_keys = vec![redis_retry_bucket_key_current, redis_retry_bucket_key_prev];
 
     for redis_retry_bucket_key in redis_retry_bucket_keys {

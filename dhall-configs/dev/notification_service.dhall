@@ -39,6 +39,8 @@ let tokenOriginInternalAuthMap =
     , RiderDashboard = driver_dashboard_internal_auth_config
     }
 
+let redis_retry_key_window = 3600
+
 in {
     grpc_port = 50051,
     http_server_port = 9091,
@@ -48,7 +50,8 @@ in {
     reader_delay_millis = 100,
     max_shards = +5,
     channel_buffer = 100000,
-    redis_retry_bucket_expiry = 7210,
-    redis_retry_key_window = 3600,
-    request_timeout_seconds = 60
+    redis_retry_bucket_expiry = (redis_retry_key_window * 2) + 60,
+    redis_retry_key_window = redis_retry_key_window,
+    request_timeout_seconds = 60,
+    read_all_connected_client_notifications = True
 }

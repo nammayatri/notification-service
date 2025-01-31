@@ -35,6 +35,7 @@ pub struct AppConfig {
     pub request_timeout_seconds: u64,
     pub redis_retry_bucket_expiry: u64,
     pub redis_retry_key_window: u64,
+    pub read_all_connected_client_notifications: bool,
 }
 
 #[derive(Clone)]

@@ -46,8 +46,15 @@ pub async fn run_server() -> Result<()> {
         error!("Panic Occured : {:?}", panic_info);
         panic!("Panic Occured : {:?}", panic_info);
     }));
-    let redis_retry_bucket_expiry = app_config.redis_retry_bucket_expiry;
-    let redis_retry_key_window = app_config.redis_retry_key_window;
+    let (
+        redis_retry_bucket_expiry,
+        redis_retry_key_window,
+        read_all_connected_client_notifications,
+    ) = (
+        app_config.redis_retry_bucket_expiry,
+        app_config.redis_retry_key_window,
+        app_config.read_all_connected_client_notifications,
+    );
     let app_state = AppState::new(app_config).await;
     #[allow(clippy::type_complexity)]
     let (read_notification_tx, read_notification_rx): (
@@ -77,6 +84,7 @@ pub async fn run_server() -> Result<()> {
         app_state.redis_pool.clone(),
         app_state.reader_delay_millis,
         app_state.max_shards,
+        read_all_connected_client_notifications,
         redis_retry_bucket_expiry,
         redis_retry_key_window,
     );

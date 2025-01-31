@@ -143,3 +143,7 @@ pub fn hash_uuid(uuid_str: &str) -> u128 {
     let (word1, word2) = uuid.as_u64_pair();
     word1 as u128 + word2 as u128
 }
+
+pub fn get_bucket_from_timestamp(bucket_expiry_in_seconds: &u64, ts: u64) -> u64 {
+    ts / bucket_expiry_in_seconds
+}
