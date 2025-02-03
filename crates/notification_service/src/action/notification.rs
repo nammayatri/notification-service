@@ -23,7 +23,7 @@ use crate::{
             NOTIFICATION_LATENCY,
         },
     },
-    NotificationAck, NotificationPayload,
+    NotificationAck, NotificationPayload, ServerStreamAck,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -88,7 +88,7 @@ impl Notification for NotificationService {
     #[allow(unused_variables)]
     async fn server_stream_payload(
         &self,
-        request: Request<NotificationAck>,
+        request: Request<ServerStreamAck>,
     ) -> Result<Response<Self::ServerStreamPayloadStream>, Status> {
         let start_time = Instant::now();
 
@@ -152,24 +152,28 @@ impl Notification for NotificationService {
         }
         measure_latency_duration!("add_client_tx", add_client_tx_start_time);
 
-        tokio::spawn(async move {
-            sleep(request_timeout_seconds).await;
+        let server_stream_ack = request.into_inner();
 
-            let (read_notification_tx_clone, client_id_clone) =
-                (read_notification_tx.clone(), client_id.clone());
+        if !server_stream_ack.is_multiple_listeners {
+            tokio::spawn(async move {
+                sleep(request_timeout_seconds).await;
 
-            info!("Client ({}) Timed Out", client_id_clone);
-            notification_client_connection_duration!("TIMED_OUT", start_time);
-            if let Err(err) = read_notification_tx_clone.send((
-                ClientId(client_id_clone.to_owned()),
-                SenderType::ClientConnection(None),
-            )) {
-                error!(
-                    "Failed to remove client's ({:?}) instance from Reader : {:?}",
-                    client_id_clone, err
-                );
-            }
-        });
+                let (read_notification_tx_clone, client_id_clone) =
+                    (read_notification_tx.clone(), client_id.clone());
+
+                info!("Client ({}) Timed Out", client_id_clone);
+                notification_client_connection_duration!("TIMED_OUT", start_time);
+                if let Err(err) = read_notification_tx_clone.send((
+                    ClientId(client_id_clone.to_owned()),
+                    SenderType::ClientConnection(None),
+                )) {
+                    error!(
+                        "Failed to remove client's ({:?}) instance from Reader : {:?}",
+                        client_id_clone, err
+                    );
+                }
+            });
+        }
 
         Ok(Response::new(Box::pin(ReceiverStream::new(client_rx))))
     }
