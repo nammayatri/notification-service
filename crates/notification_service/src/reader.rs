@@ -373,6 +373,7 @@ async fn update_active_notification_looper(
     }
 }
 
+#[macros::measure_duration]
 async fn transfer_clients_state_to_redis(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     redis_pool: Arc<RedisConnectionPool>,
