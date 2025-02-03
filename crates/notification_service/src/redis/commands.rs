@@ -10,7 +10,7 @@ use super::{keys::*, types::NotificationData};
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, decode_stream, get_bucket_from_timestamp, hash_uuid},
+        utils::{abs_diff_utc_as_sec, decode_stream, get_bucket_from_timestamp},
     },
     tools::prometheus::MEASURE_DURATION,
 };
@@ -20,8 +20,6 @@ use regex::Regex;
 use shared::measure_latency_duration;
 use shared::redis::{error::RedisError, types::RedisConnectionPool};
 use std::cmp::{max, min};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::*;
 
 #[macros::measure_duration]
@@ -151,11 +149,10 @@ pub async fn clean_up_notification(
 }
 
 pub async fn handle_retry_clients(
-    redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-    max_shards: u64,
+    redis_pool: &RedisConnectionPool,
     redis_retry_key_window: u64,
-) {
+    client_id: &str,
+) -> u64 {
     let redis_retry_bucket_key_current = retry_bucket_key(get_bucket_from_timestamp(
         &redis_retry_key_window,
         Utc::now().timestamp() as u64,
@@ -167,33 +164,15 @@ pub async fn handle_retry_clients(
     let redis_retry_bucket_keys = vec![redis_retry_bucket_key_current, redis_retry_bucket_key_prev];
 
     for redis_retry_bucket_key in redis_retry_bucket_keys {
-        if let Ok(hash_map) = redis_pool
-            .get_all_hash_fields::<u64>(&redis_retry_bucket_key)
+        if let Ok(value) = redis_pool
+            .get_hash_field::<u64>(&redis_retry_bucket_key, client_id)
             .await
         {
-            let client_ids_counter: Vec<(String, u64)> = hash_map.into_iter().collect();
-            for (client_id, count) in &client_ids_counter {
-                let shard = (hash_uuid(client_id) % max_shards as u128) as u64;
-                let mut clients_map = clients_tx
-                    .get(shard as usize)
-                    .expect("This error is impossible")
-                    .write()
-                    .await;
-                if let Some((active_notification, _sender)) =
-                    clients_map.get_mut(&ClientId(client_id.clone()))
-                {
-                    active_notification.increment(*count);
-                    let _ = redis_pool.hdel(&redis_retry_bucket_key, client_id).await;
-                    info!(
-                        "Updated ActiveNotificationCounter for client: {}",
-                        client_id
-                    );
-                } else {
-                    error!("ClientId {} not found in the shard", client_id);
-                }
-            }
+            let _ = redis_pool.hdel(&redis_retry_bucket_key, client_id).await;
+            return value;
         } else {
             error!("Error fetching hash fields");
         }
     }
+    0
 }
