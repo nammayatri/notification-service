@@ -122,10 +122,13 @@ async fn handle_client_disconnection_or_failure(
 
 #[macros::measure_duration]
 async fn client_reciever(
+    redis_pool: Arc<RedisConnectionPool>,
     client_id: ClientId,
     client_tx: SenderType,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
+    redis_retry_key_window: u64,
+    _redis_retry_bucket_expiry: u64,
 ) {
     let Shard(shard) = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
     match client_tx {
@@ -134,12 +137,17 @@ async fn client_reciever(
             CONNECTED_CLIENTS.inc();
 
             let client_reciever_clients_tx_write_start_time = tokio::time::Instant::now();
+            let counter_value =
+                handle_retry_clients(&redis_pool, redis_retry_key_window, &client_id.inner()).await;
             clients_tx
                 .get(shard as usize)
                 .expect("This error is impossible!")
                 .write()
                 .await
-                .insert(client_id, (ActiveNotificationCounter(0), client_tx));
+                .insert(
+                    client_id,
+                    (ActiveNotificationCounter(counter_value), client_tx),
+                );
             measure_latency_duration!(
                 "client_reciever_clients_tx_write",
                 client_reciever_clients_tx_write_start_time
@@ -172,11 +180,20 @@ async fn client_reciever_looper(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
     redis_retry_key_window: u64,
+    redis_retry_bucket_expiry: u64,
 ) {
     while let Some((client_id, client_tx)) = read_notification_rx.recv().await {
-        client_reciever(client_id, client_tx, clients_tx.clone(), max_shards).await;
+        client_reciever(
+            redis_pool.clone(),
+            client_id,
+            client_tx,
+            clients_tx.clone(),
+            max_shards,
+            redis_retry_key_window,
+            redis_retry_bucket_expiry,
+        )
+        .await;
     }
-    handle_retry_clients(redis_pool, clients_tx, max_shards, redis_retry_key_window).await;
     error!("Error: read_notification_rx closed");
 }
 
@@ -344,7 +361,7 @@ async fn update_active_notification_looper(
 ) {
     let pubsub_channel_key = pubsub_channel_key();
     if let Ok(mut active_notification_receiver_stream) = redis_pool
-        .subscribe_channel_as_str(pubsub_channel_key)
+        .subscribe_channel::<String>(pubsub_channel_key)
         .await
     {
         update_active_notification(
@@ -407,6 +424,7 @@ pub async fn run_notification_reader(
         clients_tx.clone(),
         max_shards,
         redis_retry_key_window,
+        redis_retry_bucket_expiry,
     ));
 
     let update_active_notifications = tokio::spawn(update_active_notification_looper(
