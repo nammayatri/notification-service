@@ -147,8 +147,6 @@ async fn handle_client_disconnection_or_failure(
         None => error!("[Notification Service Error] - ClientId not found in the shard"),
     }
 
-    drop(client);
-
     measure_latency_duration!(
         "handle_client_disconnection_or_failure_clients_tx_write",
         handle_client_disconnection_or_failure_clients_tx_write_start_time
@@ -360,7 +358,11 @@ async fn retry_notifications(
                             }
 
                             for notification in notifications {
-                                RETRIED_NOTIFICATIONS.inc();
+                                if read_all_connected_client_notifications {
+                                    TOTAL_NOTIFICATIONS.inc();
+                                } else {
+                                    RETRIED_NOTIFICATIONS.inc();
+                                }
 
                                 if notification.ttl.inner() < Utc::now() {
                                     clear_expired_notification(
@@ -452,88 +454,99 @@ async fn active_notification(
     active_notification_receiver_stream: &mut UnboundedReceiver<(String, String)>,
     max_shards: u64,
 ) {
-    loop {
-        match active_notification_receiver_stream.recv().await {
-            Some((_, client_id)) => {
-                TOTAL_NOTIFICATIONS.inc();
+    while let Some((_, client_id)) = active_notification_receiver_stream.recv().await {
+        let client_id = ClientId(client_id);
+        let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
 
-                let client_id = ClientId(client_id);
-                let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
+        let all_clients_tx = match clients_tx
+            .get(shard.inner() as usize)
+            .expect("This error is impossible")
+            .read()
+            .await
+            .get(&client_id)
+        {
+            Some(SessionMap::Single((client_tx, _))) => {
+                vec![client_tx.clone()]
+            }
+            Some(SessionMap::Multi(client)) => client
+                .iter()
+                .map(|(_, (client_tx, _))| client_tx.clone())
+                .collect(),
+            None => {
+                warn!(
+                    "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                    client_id
+                );
+                vec![]
+            }
+        };
 
-                if let Ok(notifications) = read_client_notification(redis_pool, &client_id, &shard).await {
-                    match clients_tx
-                        .get(shard.inner() as usize)
-                        .expect("This error is impossible")
-                        .write()
-                        .await.get_mut(&client_id)
-                    {
-                        Some(SessionMap::Single((_, active_notification))) => {
-                            active_notification.write().await.update(notifications.to_owned());
-                        },
-                        Some(SessionMap::Multi(client)) => {
-                            stream::iter(client.iter_mut())
-                                .for_each_concurrent(None, |(_, (_, active_notification))| async {
-                                    active_notification.write().await.update(notifications.to_owned());
-                                })
-                                .await;
-                        }
-                        None => error!("[Notification Service Error] - ClientId {:?} not found here.", client_id)
+        if !all_clients_tx.is_empty() {
+            TOTAL_NOTIFICATIONS.inc();
+
+            if let Ok(notifications) =
+                read_client_notification(redis_pool, &client_id, &shard).await
+            {
+                match clients_tx
+                    .get(shard.inner() as usize)
+                    .expect("This error is impossible")
+                    .write()
+                    .await
+                    .get_mut(&client_id)
+                {
+                    Some(SessionMap::Single((_, active_notification))) => {
+                        active_notification
+                            .write()
+                            .await
+                            .update(notifications.to_owned());
                     }
+                    Some(SessionMap::Multi(client)) => {
+                        stream::iter(client.iter_mut())
+                            .for_each_concurrent(None, |(_, (_, active_notification))| async {
+                                active_notification
+                                    .write()
+                                    .await
+                                    .update(notifications.to_owned());
+                            })
+                            .await;
+                    }
+                    None => error!(
+                        "[Notification Service Error] - ClientId {:?} not found here.",
+                        client_id
+                    ),
+                }
 
-                    for notification in notifications {
-                        if notification.ttl.inner() < Utc::now() {
-                            clear_expired_notification(
+                for notification in notifications {
+                    if notification.ttl.inner() < Utc::now() {
+                        clear_expired_notification(
+                            redis_pool,
+                            &shard,
+                            &client_id.inner(),
+                            &notification.stream_id.clone(),
+                        )
+                        .await;
+                    } else {
+                        for client_tx in all_clients_tx.clone() {
+                            if let Err(err) = send_notification(
+                                &client_id,
+                                &client_tx,
+                                notification.to_owned(),
                                 redis_pool,
                                 &shard,
-                                &client_id.inner(),
-                                &notification.stream_id.clone(),
                             )
-                            .await;
-                        } else {
-                            let clients_tx =
-                                match clients_tx
-                                    .get(shard.inner() as usize)
-                                    .expect("This error is impossible")
-                                    .read()
-                                    .await
-                                    .get(&client_id) {
-                                        Some(SessionMap::Single((client_tx, _))) => {
-                                            vec![client_tx.clone()]
-                                        },
-                                        Some(SessionMap::Multi(client)) => {
-                                            client.iter().map(|(_, (client_tx, _))| client_tx.clone()).collect()
-                                        }
-                                        None => {
-                                            warn!(
-                                                "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                                                client_id
-                                            );
-                                            vec![]
-                                        }
-                                    };
-
-                            for client_tx in clients_tx {
-                                if let Err(err) = send_notification(
-                                    &client_id,
-                                    &client_tx,
-                                    notification.to_owned(),
-                                    redis_pool,
-                                    &shard,
-                                )
-                                .await
-                                {
-                                    warn!("[Send Failed] : {}", err);
-                                }
+                            .await
+                            {
+                                warn!("[Send Failed] : {}", err);
                             }
                         }
                     }
-                } else {
-                    error!("[Notification Service Error] - Error in Fetching Notification for Client")
                 }
             }
-            None => error!("[Notification Service Error] - Issue found in the active notification receiver stream."),
+        } else {
+            warn!("[Notification Service] - Client Not Connected to this Server")
         }
     }
+    error!("[Notification Service Error] - Issue found in the active notification receiver stream.")
 }
 
 async fn active_notification_looper(
@@ -580,12 +593,6 @@ pub async fn run_notification_reader(
         max_shards,
     ));
 
-    let active_notifications = tokio::spawn(active_notification_looper(
-        redis_pool.clone(),
-        clients_tx.clone(),
-        max_shards,
-    ));
-
     let retry_notifications_task = tokio::spawn(retry_notifications_looper(
         redis_pool.clone(),
         clients_tx.clone(),
@@ -593,18 +600,38 @@ pub async fn run_notification_reader(
         Duration::from_millis(retry_delay_millis),
     ));
 
-    tokio::select!(
-        res = rx_task => {
-            error!("[Notification Service Error] - [CLIENT_RECIEVER_TASK] : {:?}", res);
-        },
-        res = active_notifications => {
-            error!("[Notification Service Error] - [ACTIVE_NOTIFICATION_TASK] : {:?}", res);
-        },
-        res = retry_notifications_task => {
-            error!("[Notification Service Error] - [RETRY_NOTIFICATION_TASK] : {:?}", res);
-        },
-        _ = graceful_termination_signal_rx => {
-            error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
-        }
-    );
+    if read_all_connected_client_notifications {
+        tokio::select!(
+            res = rx_task => {
+                error!("[Notification Service Error] - [CLIENT_RECIEVER_TASK] : {:?}", res);
+            },
+            res = retry_notifications_task => {
+                error!("[Notification Service Error] - [RETRY_NOTIFICATION_TASK] : {:?}", res);
+            },
+            _ = graceful_termination_signal_rx => {
+                error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
+            }
+        );
+    } else {
+        let active_notifications = tokio::spawn(active_notification_looper(
+            redis_pool.clone(),
+            clients_tx.clone(),
+            max_shards,
+        ));
+
+        tokio::select!(
+            res = rx_task => {
+                error!("[Notification Service Error] - [CLIENT_RECIEVER_TASK] : {:?}", res);
+            },
+            res = active_notifications => {
+                error!("[Notification Service Error] - [ACTIVE_NOTIFICATION_TASK] : {:?}", res);
+            },
+            res = retry_notifications_task => {
+                error!("[Notification Service Error] - [RETRY_NOTIFICATION_TASK] : {:?}", res);
+            },
+            _ = graceful_termination_signal_rx => {
+                error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
+            }
+        );
+    }
 }
