@@ -10,27 +10,27 @@ use crate::{
     common::{
         types::*,
         utils::{
-            abs_diff_utc_as_sec, get_bucket_from_timestamp, get_timestamp_from_stream_id,
-            hash_uuid, transform_notification_data_to_payload,
+            abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid,
+            transform_notification_data_to_payload,
         },
     },
     notification_latency,
     redis::{
         commands::{
-            clean_up_notification, handle_retry_clients, read_client_notifications,
+            clean_up_notification, read_client_notification, read_client_notifications,
             set_notification_stream_id,
         },
-        keys::{pubsub_channel_key, retry_bucket_key},
+        keys::*,
         types::NotificationData,
     },
     tools::prometheus::{
         CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_LATENCY,
-        TOTAL_NOTIFICATIONS,
+        RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
 use chrono::Utc;
-use futures::future::join_all;
+use futures::{future::join_all, stream, StreamExt};
 use rustc_hash::FxHashMap;
 use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
@@ -43,7 +43,7 @@ use tracing::*;
 
 #[macros::measure_duration]
 async fn send_notification(
-    client_id: &str,
+    client_id: &ClientId,
     client_tx: &ClientTx,
     notification: NotificationData,
     redis_pool: &RedisConnectionPool,
@@ -53,10 +53,15 @@ async fn send_notification(
         redis_pool,
         &notification.id.inner(),
         &notification.stream_id.inner(),
-        notification.ttl,
+        notification.ttl.inner(),
     )
     .await
-    .map_err(|err| error!("Error in set_notification_stream_id : {:?}", err));
+    .map_err(|err| {
+        error!(
+            "[Notification Service Error] - Error in set_notification_stream_id : {:?}",
+            err
+        )
+    });
 
     client_tx
         .send(Ok(transform_notification_data_to_payload(
@@ -71,12 +76,17 @@ async fn send_notification(
 
     let _ = clean_up_notification(
         redis_pool,
-        client_id,
+        &client_id.inner(),
         &notification.stream_id.inner(),
         shard,
     )
     .await
-    .map_err(|err| error!("Error in clean_up_notification : {}", err));
+    .map_err(|err| {
+        error!(
+            "[Notification Service Error] - Error in clean_up_notification : {}",
+            err
+        )
+    });
 
     Ok(())
 }
@@ -97,23 +107,48 @@ async fn clear_expired_notification(
         shard,
     )
     .await
-    .map_err(|err| error!("Error in clean_up_notification : {}", err));
+    .map_err(|err| {
+        error!(
+            "[Notification Service Error] - Error in clean_up_notification : {}",
+            err
+        )
+    });
 }
 
 #[macros::measure_duration]
 async fn handle_client_disconnection_or_failure(
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-    shard: u64,
+    shard: &Shard,
     client_id: &ClientId,
+    session_id: &Option<SessionID>,
 ) {
     let handle_client_disconnection_or_failure_clients_tx_write_start_time =
         tokio::time::Instant::now();
-    clients_tx
-        .get(shard as usize)
-        .expect("This is impossible.")
+
+    let mut client = clients_tx
+        .get(shard.inner() as usize)
+        .expect("This error is impossible")
         .write()
-        .await
-        .remove(client_id);
+        .await;
+
+    match client.get_mut(client_id) {
+        Some(SessionMap::Single(_)) => {
+            client.remove(client_id);
+        }
+        Some(SessionMap::Multi(client)) => {
+            if let Some(session_id) = session_id.as_ref() {
+                client.remove(session_id);
+            } else {
+                error!(
+                    "[Notification Service Error] - Session Id not Found for Multi Session Client"
+                );
+            }
+        }
+        None => error!("[Notification Service Error] - ClientId not found in the shard"),
+    }
+
+    drop(client);
+
     measure_latency_duration!(
         "handle_client_disconnection_or_failure_clients_tx_write",
         handle_client_disconnection_or_failure_clients_tx_write_start_time
@@ -124,52 +159,97 @@ async fn handle_client_disconnection_or_failure(
 async fn client_reciever(
     redis_pool: Arc<RedisConnectionPool>,
     client_id: ClientId,
-    client_tx: SenderType,
+    client_req: SenderType,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
-    redis_retry_key_window: u64,
-    _redis_retry_bucket_expiry: u64,
 ) {
-    let Shard(shard) = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
-    match client_tx {
-        SenderType::ClientConnection(Some(client_tx)) => {
+    let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
+    match client_req {
+        SenderType::ClientConnection((session_id, client_tx)) => {
             info!("[Client Connected] : {:?}", client_id);
             CONNECTED_CLIENTS.inc();
 
             let client_reciever_clients_tx_write_start_time = tokio::time::Instant::now();
-            let counter_value =
-                handle_retry_clients(&redis_pool, redis_retry_key_window, &client_id.inner()).await;
-            clients_tx
-                .get(shard as usize)
-                .expect("This error is impossible!")
-                .write()
-                .await
-                .insert(
-                    client_id,
-                    (ActiveNotificationCounter(counter_value), client_tx),
-                );
+            let active_notification = Arc::new(RwLock::new(
+                ActiveNotification::new(&redis_pool, &client_id, &shard).await,
+            ));
+
+            if let Some(session_id) = session_id {
+                let mut client = clients_tx
+                    .get(shard.inner() as usize)
+                    .expect("This error is impossible!")
+                    .write()
+                    .await;
+
+                if let Some(SessionMap::Multi(client)) = client.get_mut(&client_id) {
+                    client.insert(session_id, (client_tx, active_notification));
+                } else {
+                    let mut client_session = FxHashMap::default();
+                    client_session.insert(session_id, (client_tx, active_notification));
+                    client.insert(client_id, SessionMap::Multi(client_session));
+                }
+            } else {
+                clients_tx
+                    .get(shard.inner() as usize)
+                    .expect("This error is impossible!")
+                    .write()
+                    .await
+                    .insert(
+                        client_id,
+                        SessionMap::Single((client_tx, active_notification)),
+                    );
+            };
+
             measure_latency_duration!(
                 "client_reciever_clients_tx_write",
                 client_reciever_clients_tx_write_start_time
             );
         }
-        SenderType::ClientConnection(None) => {
-            warn!("[Client Disconnected] : {:?}", client_id);
+        SenderType::ClientDisconnection(session_id) => {
+            warn!("[Client Disconnected] : {:?} : {:?}", client_id, session_id);
             CONNECTED_CLIENTS.dec();
-            handle_client_disconnection_or_failure(clients_tx.clone(), shard, &client_id).await;
+            handle_client_disconnection_or_failure(
+                clients_tx.clone(),
+                &shard,
+                &client_id,
+                &session_id,
+            )
+            .await;
         }
-        SenderType::ClientAck => {
-            if let Some((active_notification, _sender)) = clients_tx
-                .get(shard as usize)
-                .expect("This error is impossible")
+        SenderType::ClientAck((notification_id, session_id)) => {
+            if let Some(session_id) = session_id {
+                if let Some(SessionMap::Multi(client)) = clients_tx
+                    .get(shard.inner() as usize)
+                    .expect("This error is impossible!")
+                    .write()
+                    .await
+                    .get_mut(&client_id)
+                {
+                    if let Some((_, active_notification)) = client.get_mut(&session_id) {
+                        active_notification
+                            .write()
+                            .await
+                            .acknowledge(&notification_id);
+                    } else {
+                        error!("[Notification Service Error] - SessionId not found in the Client Shard");
+                    }
+                } else {
+                    error!("[Notification Service Error] - Multi Client Session not found for the Client");
+                }
+            } else if let Some(SessionMap::Single((_, active_notification))) = clients_tx
+                .get(shard.inner() as usize)
+                .expect("This error is impossible!")
                 .write()
                 .await
-                .get_mut(&ClientId(client_id.inner().clone()))
+                .get_mut(&client_id)
             {
-                active_notification.decrement(1);
+                active_notification
+                    .write()
+                    .await
+                    .acknowledge(&notification_id);
             } else {
-                error!("ClientId not found in the shard");
-            }
+                error!("[Notification Service Error] - ClientId not found in the Shard");
+            };
         }
     }
 }
@@ -179,8 +259,6 @@ async fn client_reciever_looper(
     mut read_notification_rx: UnboundedReceiver<(ClientId, SenderType)>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
-    redis_retry_key_window: u64,
-    redis_retry_bucket_expiry: u64,
 ) {
     while let Some((client_id, client_tx)) = read_notification_rx.recv().await {
         client_reciever(
@@ -189,16 +267,14 @@ async fn client_reciever_looper(
             client_tx,
             clients_tx.clone(),
             max_shards,
-            redis_retry_key_window,
-            redis_retry_bucket_expiry,
         )
         .await;
     }
-    error!("Error: read_notification_rx closed");
+    error!("[Notification Service Error] - read_notification_rx closed");
 }
 
 #[macros::measure_duration]
-async fn read_and_process_notification(
+async fn retry_notifications(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     read_all_connected_client_notifications: bool,
@@ -210,94 +286,140 @@ async fn read_and_process_notification(
             let shard = Shard(shard as u64);
             let (redis_pool_clone, clients_tx_clone) = (redis_pool.clone(), clients_tx.clone());
             async move {
-                let read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time =
-                    tokio::time::Instant::now();
-
                 let client_ids = clients
                     .read()
                     .await
                     .iter()
-                    .filter(|(_, (active_notification, _))| read_all_connected_client_notifications || active_notification.inner() > 0)
-                    .map(|(client_id, _)| client_id.clone())
-                    .collect();
+                    .filter_map(|(client_id, client)| {
+                       let read_all = read_all_connected_client_notifications;
+                       if read_all {
+                            return Some(client_id.to_owned());
+                        }
+                        match client {
+                            SessionMap::Single((_, active_notification)) => {
+                                if let Ok(active_notification) = active_notification.try_read() {
+                                    if active_notification.count() > 0 {
+                                        return Some(client_id.to_owned())
+                                    }
+                                }
+                                None
+                            }
+                            SessionMap::Multi(client) => {
+                                let has_active = client.iter().any(|(_, (_, active_notification))| {
+                                    if let Ok(active_notification) = active_notification.try_read() {
+                                        if active_notification.count() > 0 {
+                                            return true;
+                                        }
+                                    }
+                                    false
+                                });
 
-                measure_latency_duration!(
-                    "read_client_notifications_parallely_in_batch_task_clients_tx_read",
-                    read_client_notifications_parallely_in_batch_task_clients_tx_read_start_time
-                );
+                                if has_active {
+                                    Some(client_id.to_owned())
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                    })
+                    .collect();
 
                 let notifications = read_client_notifications(&redis_pool_clone, client_ids, &shard).await;
 
                 match notifications {
                     Ok(notifications) => {
-                        for (ClientId(client_id), notifications) in notifications.into_iter() {
-                            // Self Healing: In case any inconsistencies caused in Count, it can safely get reset if Notifications are empty.
+                        for (client_id, notifications) in notifications.into_iter() {
+
                             if notifications.is_empty() {
-                                match clients_tx_clone.get(shard.inner() as usize).expect("This error is impossible!").write().await.get_mut(&ClientId(client_id.clone())) {
-                                    Some((active_notification, _sender)) => {
-                                        active_notification.reset();
-                                    }
-                                    None => {
-                                        error!("No active notification found for client ID {:?}", client_id);
-                                    }
-                                }
+                                 match clients_tx_clone
+                                    .get(shard.inner() as usize)
+                                    .expect("This error is impossible")
+                                    .read()
+                                    .await
+                                    .get(&client_id) {
+                                        Some(SessionMap::Single((_, active_notification))) => {
+                                            if let Ok(active_notification) = active_notification.try_write() {
+                                                active_notification.refresh()
+                                            }
+                                        },
+                                        Some(SessionMap::Multi(client)) => {
+                                            for (_, (_, active_notification)) in client.iter() {
+                                                if let Ok(active_notification) = active_notification.try_write() {
+                                                    active_notification.refresh()
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            warn!(
+                                                "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                                                client_id
+                                            );
+                                        }
+                                    };
                                 continue;
                             }
 
                             for notification in notifications {
-                                TOTAL_NOTIFICATIONS.inc();
+                                RETRIED_NOTIFICATIONS.inc();
 
-                                if notification.ttl < Utc::now() {
+                                if notification.ttl.inner() < Utc::now() {
                                     clear_expired_notification(
                                         &Arc::clone(&redis_pool_clone),
                                         &shard.clone(),
-                                        &client_id,
+                                        &client_id.inner(),
                                         &notification.stream_id.clone(),
                                     )
                                     .await;
                                 } else {
                                     let read_and_process_notification_clients_tx_read_start_time =
                                         tokio::time::Instant::now();
-                                    let client_tx = clients_tx_clone
-                                        .get(shard.inner() as usize)
-                                        .expect("This error is impossible!")
-                                        .read()
-                                        .await
-                                        .get(&ClientId(client_id.to_owned()))
-                                        .cloned();
+
+                                    let clients_tx =
+                                        match clients_tx_clone
+                                            .get(shard.inner() as usize)
+                                            .expect("This error is impossible")
+                                            .read()
+                                            .await
+                                            .get(&client_id) {
+                                                Some(SessionMap::Single((client_tx, _))) => {
+                                                    vec![client_tx.clone()]
+                                                },
+                                                Some(SessionMap::Multi(client)) => {
+                                                    client.iter().map(|(_, (client_tx, _))| client_tx.clone()).collect()
+                                                }
+                                                None => {
+                                                    warn!(
+                                                        "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                                                        client_id
+                                                    );
+                                                    vec![]
+                                                }
+                                            };
+
                                     measure_latency_duration!(
                                         "read_and_process_notification_clients_tx_read",
                                         read_and_process_notification_clients_tx_read_start_time
                                     );
 
-                                    if let Some(client_tx) = client_tx {
-                                        let (_active_notification, sender) = client_tx;
-                                        let (client_id_clone, client_tx_clone, redis_pool_clone, shard_clone ) = (client_id.clone(), sender.clone(), redis_pool_clone.clone(), shard.clone());
-                                        // tokio::spawn(async move {
-                                            if let Err(err) = send_notification(
-                                                &client_id_clone,
-                                                &client_tx_clone,
-                                                notification.to_owned(),
-                                                &redis_pool_clone,
-                                                &shard_clone,
-                                            )
-                                            .await
-                                            {
-                                                warn!("[Send Failed] : {}", err);
-                                            }
-                                        // });
-                                    } else {
-                                        warn!(
-                                            "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                                            client_id
-                                        );
+                                    for client_tx in clients_tx {
+                                        if let Err(err) = send_notification(
+                                            &client_id,
+                                            &client_tx,
+                                            notification.to_owned(),
+                                            &redis_pool_clone,
+                                            &shard,
+                                        )
+                                        .await
+                                        {
+                                            warn!("[Send Failed] : {}", err);
+                                        }
                                     }
                                 }
                             }
                         }
                     },
                     Err(err) => {
-                        error!("read_client_notifications : {}", err);
+                        error!("[Notification Service Error] - read_client_notifications : {}", err);
                     }
                 }
             }
@@ -307,14 +429,14 @@ async fn read_and_process_notification(
     join_all(read_client_notifications_batch_task).await;
 }
 
-async fn read_and_process_notification_looper(
+async fn retry_notifications_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     read_all_connected_client_notifications: bool,
     delay: Duration,
 ) {
     loop {
-        read_and_process_notification(
+        retry_notifications(
             redis_pool.clone(),
             clients_tx.clone(),
             read_all_connected_client_notifications,
@@ -324,37 +446,97 @@ async fn read_and_process_notification_looper(
     }
 }
 
-async fn update_active_notification(
+async fn active_notification(
+    redis_pool: &RedisConnectionPool,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     active_notification_receiver_stream: &mut UnboundedReceiver<(String, String)>,
     max_shards: u64,
 ) {
     loop {
         match active_notification_receiver_stream.recv().await {
-            Some((_channel_name, client_id)) => {
-                let Shard(shard) = Shard((hash_uuid(&client_id) % max_shards as u128) as u64);
-                if let Some((active_notification, _client_tx)) = clients_tx
-                    .get(shard as usize)
-                    .expect("This error is impossible!")
-                    .write()
-                    .await
-                    .get_mut(&ClientId(client_id.clone()))
-                {
-                    active_notification.increment(1);
-                    info!(
-                        "Updated ActiveNotificationCounter for client: {}",
-                        client_id
-                    );
+            Some((_, client_id)) => {
+                TOTAL_NOTIFICATIONS.inc();
+
+                let client_id = ClientId(client_id);
+                let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
+
+                if let Ok(notifications) = read_client_notification(redis_pool, &client_id, &shard).await {
+                    match clients_tx
+                        .get(shard.inner() as usize)
+                        .expect("This error is impossible")
+                        .write()
+                        .await.get_mut(&client_id)
+                    {
+                        Some(SessionMap::Single((_, active_notification))) => {
+                            active_notification.write().await.update(notifications.to_owned());
+                        },
+                        Some(SessionMap::Multi(client)) => {
+                            stream::iter(client.iter_mut())
+                                .for_each_concurrent(None, |(_, (_, active_notification))| async {
+                                    active_notification.write().await.update(notifications.to_owned());
+                                })
+                                .await;
+                        }
+                        None => error!("[Notification Service Error] - ClientId {:?} not found here.", client_id)
+                    }
+
+                    for notification in notifications {
+                        if notification.ttl.inner() < Utc::now() {
+                            clear_expired_notification(
+                                redis_pool,
+                                &shard,
+                                &client_id.inner(),
+                                &notification.stream_id.clone(),
+                            )
+                            .await;
+                        } else {
+                            let clients_tx =
+                                match clients_tx
+                                    .get(shard.inner() as usize)
+                                    .expect("This error is impossible")
+                                    .read()
+                                    .await
+                                    .get(&client_id) {
+                                        Some(SessionMap::Single((client_tx, _))) => {
+                                            vec![client_tx.clone()]
+                                        },
+                                        Some(SessionMap::Multi(client)) => {
+                                            client.iter().map(|(_, (client_tx, _))| client_tx.clone()).collect()
+                                        }
+                                        None => {
+                                            warn!(
+                                                "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                                                client_id
+                                            );
+                                            vec![]
+                                        }
+                                    };
+
+                            for client_tx in clients_tx {
+                                if let Err(err) = send_notification(
+                                    &client_id,
+                                    &client_tx,
+                                    notification.to_owned(),
+                                    redis_pool,
+                                    &shard,
+                                )
+                                .await
+                                {
+                                    warn!("[Send Failed] : {}", err);
+                                }
+                            }
+                        }
+                    }
                 } else {
-                    info!("ClientId {} not found here.", client_id);
+                    error!("[Notification Service Error] - Error in Fetching Notification for Client")
                 }
             }
-            None => error!("Issue found in the active notification receiver stream."),
+            None => error!("[Notification Service Error] - Issue found in the active notification receiver stream."),
         }
     }
 }
 
-async fn update_active_notification_looper(
+async fn active_notification_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
@@ -364,42 +546,16 @@ async fn update_active_notification_looper(
         .subscribe_channel::<String>(pubsub_channel_key)
         .await
     {
-        update_active_notification(
+        active_notification(
+            &redis_pool,
             clients_tx.clone(),
             &mut active_notification_receiver_stream,
             max_shards,
         )
         .await;
+    } else {
+        error!("[Notification Service Error] - Unable to Subscribe to Channel")
     }
-}
-
-#[macros::measure_duration]
-async fn transfer_clients_state_to_redis(
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-    redis_pool: Arc<RedisConnectionPool>,
-    redis_retry_key_window: u64,
-    redis_retry_bucket_expiry: u64,
-) {
-    let mut result: Vec<(String, u64)> = Vec::new();
-    for rwlock in clients_tx.iter() {
-        let reader_map = rwlock.read().await;
-        for (client_id, (counter, _)) in reader_map.iter() {
-            if counter.inner() > 0 {
-                result.push((client_id.inner(), counter.inner()));
-            }
-        }
-    }
-
-    let _ = redis_pool
-        .set_hash_fields_with_hashmap_expiry(
-            &retry_bucket_key(get_bucket_from_timestamp(
-                &redis_retry_key_window,
-                Utc::now().timestamp() as u64,
-            )),
-            result,
-            redis_retry_bucket_expiry as i64,
-        )
-        .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -407,11 +563,9 @@ pub async fn run_notification_reader(
     read_notification_rx: UnboundedReceiver<(ClientId, SenderType)>,
     graceful_termination_signal_rx: sync::oneshot::Receiver<()>,
     redis_pool: Arc<RedisConnectionPool>,
-    reader_delay_millis: u64,
+    retry_delay_millis: u64,
     max_shards: u64,
     read_all_connected_client_notifications: bool,
-    redis_retry_bucket_expiry: u64,
-    redis_retry_key_window: u64,
 ) {
     let clients_tx: Arc<Vec<RwLock<ReaderMap>>> = Arc::new(
         (0..max_shards)
@@ -424,36 +578,33 @@ pub async fn run_notification_reader(
         read_notification_rx,
         clients_tx.clone(),
         max_shards,
-        redis_retry_key_window,
-        redis_retry_bucket_expiry,
     ));
 
-    let update_active_notifications = tokio::spawn(update_active_notification_looper(
+    let active_notifications = tokio::spawn(active_notification_looper(
         redis_pool.clone(),
         clients_tx.clone(),
         max_shards,
     ));
 
-    let process_notifications_task = tokio::spawn(read_and_process_notification_looper(
+    let retry_notifications_task = tokio::spawn(retry_notifications_looper(
         redis_pool.clone(),
         clients_tx.clone(),
         read_all_connected_client_notifications,
-        Duration::from_millis(reader_delay_millis),
+        Duration::from_millis(retry_delay_millis),
     ));
 
     tokio::select!(
         res = rx_task => {
-            error!("[CLIENT_RECIEVER_TASK] : {:?}", res);
+            error!("[Notification Service Error] - [CLIENT_RECIEVER_TASK] : {:?}", res);
         },
-        res = process_notifications_task => {
-            error!("[READ_PROCESS_NOTIFICATION_TASK] : {:?}", res);
+        res = active_notifications => {
+            error!("[Notification Service Error] - [ACTIVE_NOTIFICATION_TASK] : {:?}", res);
         },
-        res = update_active_notifications => {
-            error!("[UPDATE_ACTIVE_NOTIFICATION_TASK] : {:?}", res);
+        res = retry_notifications_task => {
+            error!("[Notification Service Error] - [RETRY_NOTIFICATION_TASK] : {:?}", res);
         },
         _ = graceful_termination_signal_rx => {
-            error!("[Graceful Shutting Down]");
-            transfer_clients_state_to_redis(clients_tx.clone(), redis_pool, redis_retry_key_window, redis_retry_bucket_expiry).await;
+            error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
         }
     );
 }

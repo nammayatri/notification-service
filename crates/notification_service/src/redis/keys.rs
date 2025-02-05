@@ -22,7 +22,3 @@ pub fn notification_stream_key(notification_id: &str) -> String {
 pub fn pubsub_channel_key() -> &'static str {
     "active-notification"
 }
-
-pub fn retry_bucket_key(bucket: u64) -> String {
-    format!("N-R:{}", bucket)
-}

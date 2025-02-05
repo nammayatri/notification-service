@@ -7,11 +7,6 @@ message NotificationAck {
   string id = 1;
 }
 
-// Message for stream notifications
-message ServerStreamAck {
-  bool isMultipleListeners = 1;
-}
-
 // Message for the entity associated with the notification
 message Entity {
   string id = 1;
@@ -32,5 +27,5 @@ message NotificationPayload {
 // Notification service with a single Bi-directional RPC method
 service Notification {
   // The RPC method for server side streaming notifications without acknowledgments
-  rpc ServerStreamPayload(ServerStreamAck) returns (stream NotificationPayload);
+  rpc ServerStreamPayload(NotificationAck) returns (stream NotificationPayload);
 }

@@ -29,12 +29,10 @@ pub struct AppConfig {
     pub internal_auth_cfg: HashMap<TokenOrigin, InternalAuthConfig>,
     pub logger_cfg: LoggerConfig,
     pub redis_cfg: RedisSettings,
-    pub reader_delay_millis: u64,
+    pub retry_delay_millis: u64,
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: u64,
-    pub redis_retry_bucket_expiry: u64,
-    pub redis_retry_key_window: u64,
     pub read_all_connected_client_notifications: bool,
 }
 
@@ -42,7 +40,7 @@ pub struct AppConfig {
 pub struct AppState {
     pub redis_pool: Arc<RedisConnectionPool>,
     pub internal_auth_cfg: HashMap<TokenOrigin, InternalAuthConfig>,
-    pub reader_delay_millis: u64,
+    pub retry_delay_millis: u64,
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub max_shards: u64,
@@ -69,7 +67,7 @@ impl AppState {
         AppState {
             redis_pool,
             internal_auth_cfg: app_config.internal_auth_cfg,
-            reader_delay_millis: app_config.reader_delay_millis,
+            retry_delay_millis: app_config.retry_delay_millis,
             grpc_port: app_config.grpc_port,
             http_server_port: app_config.http_server_port,
             max_shards: app_config.max_shards,

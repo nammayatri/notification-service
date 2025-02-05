@@ -41,7 +41,7 @@ mod tests {
 
         let app_state = AppState::new(app_config).await;
 
-        const TOTAL_CONNECTED_CLIENTS: usize = 100;
+        const TOTAL_CONNECTED_CLIENTS: usize = 1;
 
         let mut client_ids = Vec::with_capacity(TOTAL_CONNECTED_CLIENTS);
 
@@ -52,13 +52,14 @@ mod tests {
         }
 
         loop {
+            sleep(Duration::from_secs(5)).await;
             for client_id in client_ids.iter().take(TOTAL_CONNECTED_CLIENTS) {
+                info!("Notification Client ID: {:?}", client_id);
                 tokio::spawn(generate_and_add_notifications(
                     app_state.clone(),
                     client_id.to_string(),
                 ));
             }
-            sleep(Duration::from_millis(5000)).await;
         }
     }
 
@@ -170,7 +171,10 @@ mod tests {
             )
             .await?;
 
-        info!("{:?}", decode_stream::<NotificationData>(res)?);
+        info!(
+            "Notification Added : {:?}",
+            decode_stream::<NotificationData>(res)?
+        );
 
         Ok(())
     }
@@ -255,7 +259,7 @@ mod tests {
 
                 while let Some(response) = tokio_stream::StreamExt::next(&mut inbound).await {
                     let notification = response?;
-                    info!("{:?}", notification);
+                    info!("Got Notification : {:?}", notification);
                     tx.send(notification_service::NotificationAck {
                         id: notification.id,
                     })
@@ -269,7 +273,7 @@ mod tests {
             match result {
                 Ok(()) => {
                     // Connection succeeded, break out of the loop
-                    break;
+                    // break;
                 }
                 Err(err) => {
                     attempt_count += 1;
@@ -280,8 +284,6 @@ mod tests {
                 }
             }
         }
-
-        Ok(())
     }
 
     #[tokio::test]

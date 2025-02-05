@@ -19,7 +19,7 @@ pub struct NotificationData {
     pub body: String,
     pub show: String,
     pub created_at: DateTime<Utc>,
-    pub ttl: DateTime<Utc>,
+    pub ttl: Ttl,
     pub entity: EntityData,
 }
 

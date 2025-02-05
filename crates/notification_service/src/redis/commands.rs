@@ -10,7 +10,7 @@ use super::{keys::*, types::NotificationData};
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, decode_stream, get_bucket_from_timestamp},
+        utils::{abs_diff_utc_as_sec, decode_stream},
     },
     tools::prometheus::MEASURE_DURATION,
 };
@@ -44,6 +44,26 @@ pub async fn get_client_id(
         .get_key_as_str(&client_details_key(token))
         .await?
         .map(ClientId))
+}
+
+#[macros::measure_duration]
+pub async fn read_client_notification(
+    redis_pool: &RedisConnectionPool,
+    client_id: &ClientId,
+    Shard(shard): &Shard,
+) -> Result<Vec<NotificationData>> {
+    let notifications = redis_pool
+        .xread(
+            vec![notification_client_key(&client_id.inner(), shard)],
+            vec![StreamEntry::default().inner()],
+            None,
+        )
+        .await?;
+
+    Ok(decode_stream::<NotificationData>(notifications)?
+        .into_values()
+        .flatten()
+        .collect())
 }
 
 #[macros::measure_duration]
@@ -146,33 +166,4 @@ pub async fn clean_up_notification(
         )
         .await?;
     Ok(())
-}
-
-pub async fn handle_retry_clients(
-    redis_pool: &RedisConnectionPool,
-    redis_retry_key_window: u64,
-    client_id: &str,
-) -> u64 {
-    let redis_retry_bucket_key_current = retry_bucket_key(get_bucket_from_timestamp(
-        &redis_retry_key_window,
-        Utc::now().timestamp() as u64,
-    ));
-    let redis_retry_bucket_key_prev = retry_bucket_key(get_bucket_from_timestamp(
-        &redis_retry_key_window,
-        Utc::now().timestamp() as u64 - redis_retry_key_window,
-    ));
-    let redis_retry_bucket_keys = vec![redis_retry_bucket_key_current, redis_retry_bucket_key_prev];
-
-    for redis_retry_bucket_key in redis_retry_bucket_keys {
-        if let Ok(value) = redis_pool
-            .get_hash_field::<u64>(&redis_retry_bucket_key, client_id)
-            .await
-        {
-            let _ = redis_pool.hdel(&redis_retry_bucket_key, client_id).await;
-            return value;
-        } else {
-            error!("Error fetching hash fields");
-        }
-    }
-    0
 }

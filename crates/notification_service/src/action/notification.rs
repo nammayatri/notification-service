@@ -23,7 +23,7 @@ use crate::{
             NOTIFICATION_LATENCY,
         },
     },
-    NotificationAck, NotificationPayload, ServerStreamAck,
+    NotificationAck, NotificationPayload,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -88,7 +88,7 @@ impl Notification for NotificationService {
     #[allow(unused_variables)]
     async fn server_stream_payload(
         &self,
-        request: Request<ServerStreamAck>,
+        request: Request<NotificationAck>,
     ) -> Result<Response<Self::ServerStreamPayloadStream>, Status> {
         let start_time = Instant::now();
 
@@ -106,6 +106,11 @@ impl Notification for NotificationService {
             .and_then(|origin| origin.to_str().ok())
             .and_then(|origin| TokenOrigin::from_str(origin).ok())
             .unwrap_or(TokenOrigin::DriverApp);
+
+        let session_id = metadata
+            .get("session-id")
+            .and_then(|origin| origin.to_str().ok())
+            .map(|origin| SessionID(origin.to_string()));
 
         let ClientId(client_id) = if var("DEV").is_ok() {
             ClientId(token.to_owned())
@@ -143,7 +148,7 @@ impl Notification for NotificationService {
         let add_client_tx_start_time = Instant::now();
         if let Err(err) = read_notification_tx.clone().send((
             ClientId(client_id.to_owned()),
-            SenderType::ClientConnection(Some(client_tx)),
+            SenderType::ClientConnection((session_id.to_owned(), client_tx)),
         )) {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
@@ -152,28 +157,24 @@ impl Notification for NotificationService {
         }
         measure_latency_duration!("add_client_tx", add_client_tx_start_time);
 
-        let server_stream_ack = request.into_inner();
+        tokio::spawn(async move {
+            sleep(request_timeout_seconds).await;
 
-        if !server_stream_ack.is_multiple_listeners {
-            tokio::spawn(async move {
-                sleep(request_timeout_seconds).await;
+            let (read_notification_tx_clone, client_id_clone) =
+                (read_notification_tx.clone(), client_id.clone());
 
-                let (read_notification_tx_clone, client_id_clone) =
-                    (read_notification_tx.clone(), client_id.clone());
-
-                info!("Client ({}) Timed Out", client_id_clone);
-                notification_client_connection_duration!("TIMED_OUT", start_time);
-                if let Err(err) = read_notification_tx_clone.send((
-                    ClientId(client_id_clone.to_owned()),
-                    SenderType::ClientConnection(None),
-                )) {
-                    error!(
-                        "Failed to remove client's ({:?}) instance from Reader : {:?}",
-                        client_id_clone, err
-                    );
-                }
-            });
-        }
+            info!("Client ({}) Timed Out", client_id_clone);
+            notification_client_connection_duration!("TIMED_OUT", start_time);
+            if let Err(err) = read_notification_tx_clone.send((
+                ClientId(client_id_clone.to_owned()),
+                SenderType::ClientDisconnection(session_id),
+            )) {
+                error!(
+                    "Failed to remove client's ({:?}) instance from Reader : {:?}",
+                    client_id_clone, err
+                );
+            }
+        });
 
         Ok(Response::new(Box::pin(ReceiverStream::new(client_rx))))
     }
@@ -236,7 +237,7 @@ impl Notification for NotificationService {
         let add_client_tx_start_time = Instant::now();
         if let Err(err) = read_notification_tx.clone().send((
             ClientId(client_id.to_owned()),
-            SenderType::ClientConnection(Some(client_tx)),
+            SenderType::ClientConnection((None, client_tx)),
         )) {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
@@ -277,9 +278,10 @@ impl Notification for NotificationService {
                                     error!("Error in getting Notification Stream Id : {:?}", err);
                                 }
                             }
-                            if let Err(err) = read_notification_tx_clone
-                                .send((ClientId(client_id_clone.to_owned()), SenderType::ClientAck))
-                            {
+                            if let Err(err) = read_notification_tx_clone.send((
+                                ClientId(client_id_clone.to_owned()),
+                                SenderType::ClientAck((NotificationId(notification_ack.id), None)),
+                            )) {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
                                     client_id_clone, err
@@ -292,7 +294,7 @@ impl Notification for NotificationService {
                             notification_client_connection_duration!("DISCONNECTED", start_time);
                             if let Err(err) = read_notification_tx_clone.send((
                                 ClientId(client_id_clone.to_owned()),
-                                SenderType::ClientConnection(None),
+                                SenderType::ClientDisconnection(None),
                             )) {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -306,7 +308,7 @@ impl Notification for NotificationService {
                             notification_client_connection_duration!("DISCONNECTED", start_time);
                             if let Err(err) = read_notification_tx_clone.send((
                                 ClientId(client_id_clone.to_owned()),
-                                SenderType::ClientConnection(None),
+                                SenderType::ClientDisconnection(None),
                             )) {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -327,7 +329,7 @@ impl Notification for NotificationService {
                 notification_client_connection_duration!("TIMED_OUT", start_time);
                 if let Err(err) = read_notification_tx_clone.send((
                     ClientId(client_id_clone.to_owned()),
-                    SenderType::ClientConnection(None),
+                    SenderType::ClientDisconnection(None),
                 )) {
                     error!(
                         "Failed to remove client's ({:?}) instance from Reader : {:?}",
