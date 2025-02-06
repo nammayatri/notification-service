@@ -7,6 +7,7 @@
 */
 
 use crate::{
+    channel_delay,
     common::{
         types::*,
         utils::{
@@ -24,12 +25,12 @@ use crate::{
         types::NotificationData,
     },
     tools::prometheus::{
-        CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_LATENCY,
-        RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+        CHANNEL_DELAY, CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION,
+        NOTIFICATION_LATENCY, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::{future::join_all, stream, StreamExt};
 use rustc_hash::FxHashMap;
 use shared::measure_latency_duration;
@@ -144,7 +145,7 @@ async fn handle_client_disconnection_or_failure(
                 );
             }
         }
-        None => error!("[Notification Service Error] - ClientId not found in the shard"),
+        None => warn!("[Notification Service Error] - ClientId not found in the shard"),
     }
 
     measure_latency_duration!(
@@ -254,11 +255,13 @@ async fn client_reciever(
 
 async fn client_reciever_looper(
     redis_pool: Arc<RedisConnectionPool>,
-    mut read_notification_rx: UnboundedReceiver<(ClientId, SenderType)>,
+    mut read_notification_rx: UnboundedReceiver<(ClientId, SenderType, DateTime<Utc>)>,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
     max_shards: u64,
 ) {
-    while let Some((client_id, client_tx)) = read_notification_rx.recv().await {
+    while let Some((client_id, client_tx, sent_at)) = read_notification_rx.recv().await {
+        channel_delay!(sent_at, &client_tx.to_string());
+
         client_reciever(
             redis_pool.clone(),
             client_id,
@@ -451,10 +454,12 @@ async fn retry_notifications_looper(
 async fn active_notification(
     redis_pool: &RedisConnectionPool,
     clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
-    active_notification_receiver_stream: &mut UnboundedReceiver<(String, String)>,
+    active_notification_receiver_stream: &mut UnboundedReceiver<(String, String, DateTime<Utc>)>,
     max_shards: u64,
 ) {
-    while let Some((_, client_id)) = active_notification_receiver_stream.recv().await {
+    while let Some((_, client_id, sent_at)) = active_notification_receiver_stream.recv().await {
+        channel_delay!(sent_at, "active_notification");
+
         let client_id = ClientId(client_id);
         let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
 
@@ -573,7 +578,7 @@ async fn active_notification_looper(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_notification_reader(
-    read_notification_rx: UnboundedReceiver<(ClientId, SenderType)>,
+    read_notification_rx: UnboundedReceiver<(ClientId, SenderType, DateTime<Utc>)>,
     graceful_termination_signal_rx: sync::oneshot::Receiver<()>,
     redis_pool: Arc<RedisConnectionPool>,
     retry_delay_millis: u64,

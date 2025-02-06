@@ -18,6 +18,7 @@ use crate::{
 };
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use shared::tools::logger::setup_tracing;
 use std::{
     env::var,
@@ -52,8 +53,8 @@ pub async fn run_server() -> Result<()> {
     let app_state = AppState::new(app_config).await;
     #[allow(clippy::type_complexity)]
     let (read_notification_tx, read_notification_rx): (
-        UnboundedSender<(ClientId, SenderType)>,
-        UnboundedReceiver<(ClientId, SenderType)>,
+        UnboundedSender<(ClientId, SenderType, DateTime<Utc>)>,
+        UnboundedReceiver<(ClientId, SenderType, DateTime<Utc>)>,
     ) = mpsc::unbounded_channel();
 
     let (signal_tx, signal_rx) = oneshot::channel();

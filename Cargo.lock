@@ -1593,7 +1593,7 @@ dependencies = [
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=b3ceac0#b3ceac05caf4e4d0b507c8f474055f95d89aec40"
+source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=aa9453f#aa9453f3eebf0e31c7291b4274d341d44cb6dbf0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1756,7 +1756,7 @@ dependencies = [
  "http-body",
  "hyper",
  "itertools 0.12.0",
- "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=b3ceac0)",
+ "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=aa9453f)",
  "once_cell",
  "package",
  "pin-project",
@@ -1771,7 +1771,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha256",
- "shared 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=b3ceac0)",
+ "shared 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=aa9453f)",
  "strum",
  "strum_macros",
  "thiserror",
@@ -2742,15 +2742,16 @@ dependencies = [
 [[package]]
 name = "shared"
 version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=b3ceac0#b3ceac05caf4e4d0b507c8f474055f95d89aec40"
+source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=aa9453f#aa9453f3eebf0e31c7291b4274d341d44cb6dbf0"
 dependencies = [
  "actix-web",
  "actix-web-prom",
  "async-trait",
+ "chrono",
  "error-stack",
  "fred 9.4.0",
  "futures",
- "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=b3ceac0)",
+ "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=aa9453f)",
  "once_cell",
  "prometheus",
  "reqwest",

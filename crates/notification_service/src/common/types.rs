@@ -9,6 +9,7 @@ use crate::{
     redis::{commands::read_client_notification, types::NotificationData},
     NotificationPayload,
 };
+
 use chrono::{DateTime, Utc};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -109,9 +110,15 @@ impl Default for StreamEntry {
 
 pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
 
+#[derive(Display)]
 pub enum SenderType {
+    #[strum(to_string = "ClientConnection")]
     ClientConnection((Option<SessionID>, ClientTx)),
+
+    #[strum(to_string = "ClientDisconnection")]
     ClientDisconnection(Option<SessionID>),
+
+    #[strum(to_string = "ClientAck")]
     ClientAck((NotificationId, Option<SessionID>)),
 }
 

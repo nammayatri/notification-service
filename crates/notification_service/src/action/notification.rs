@@ -26,7 +26,7 @@ use crate::{
     NotificationAck, NotificationPayload,
 };
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::Stream;
 use reqwest::Url;
 use shared::measure_latency_duration;
@@ -42,14 +42,14 @@ use tracing::*;
 
 #[allow(clippy::type_complexity)]
 pub struct NotificationService {
-    read_notification_tx: UnboundedSender<(ClientId, SenderType)>,
+    read_notification_tx: UnboundedSender<(ClientId, SenderType, DateTime<Utc>)>,
     app_state: AppState,
 }
 
 impl NotificationService {
     #[allow(clippy::type_complexity)]
     pub fn new(
-        read_notification_tx: UnboundedSender<(ClientId, SenderType)>,
+        read_notification_tx: UnboundedSender<(ClientId, SenderType, DateTime<Utc>)>,
         app_state: AppState,
     ) -> Self {
         NotificationService {
@@ -149,6 +149,7 @@ impl Notification for NotificationService {
         if let Err(err) = read_notification_tx.clone().send((
             ClientId(client_id.to_owned()),
             SenderType::ClientConnection((session_id.to_owned(), client_tx)),
+            Utc::now(),
         )) {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
@@ -168,6 +169,7 @@ impl Notification for NotificationService {
             if let Err(err) = read_notification_tx_clone.send((
                 ClientId(client_id_clone.to_owned()),
                 SenderType::ClientDisconnection(session_id),
+                Utc::now(),
             )) {
                 error!(
                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -238,6 +240,7 @@ impl Notification for NotificationService {
         if let Err(err) = read_notification_tx.clone().send((
             ClientId(client_id.to_owned()),
             SenderType::ClientConnection((None, client_tx)),
+            Utc::now(),
         )) {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
@@ -281,6 +284,7 @@ impl Notification for NotificationService {
                             if let Err(err) = read_notification_tx_clone.send((
                                 ClientId(client_id_clone.to_owned()),
                                 SenderType::ClientAck((NotificationId(notification_ack.id), None)),
+                                Utc::now(),
                             )) {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -295,6 +299,7 @@ impl Notification for NotificationService {
                             if let Err(err) = read_notification_tx_clone.send((
                                 ClientId(client_id_clone.to_owned()),
                                 SenderType::ClientDisconnection(None),
+                                Utc::now(),
                             )) {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -309,6 +314,7 @@ impl Notification for NotificationService {
                             if let Err(err) = read_notification_tx_clone.send((
                                 ClientId(client_id_clone.to_owned()),
                                 SenderType::ClientDisconnection(None),
+                                Utc::now(),
                             )) {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
@@ -330,6 +336,7 @@ impl Notification for NotificationService {
                 if let Err(err) = read_notification_tx_clone.send((
                     ClientId(client_id_clone.to_owned()),
                     SenderType::ClientDisconnection(None),
+                    Utc::now(),
                 )) {
                     error!(
                         "Failed to remove client's ({:?}) instance from Reader : {:?}",

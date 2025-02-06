@@ -50,6 +50,14 @@ pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
         .expect("Failed to register notifiction latency metrics")
     });
 
+pub static CHANNEL_DELAY: once_cell::sync::Lazy<HistogramVec> = once_cell::sync::Lazy::new(|| {
+    register_histogram_vec!(
+        opts!("channel_delay", "Channel Delay").into(),
+        &["version", "name"]
+    )
+    .expect("Failed to register channel delay metrics")
+});
+
 pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync::Lazy::new(|| {
     register_int_gauge!("connected_clients", "Connected Clients")
         .expect("Failed to register connected clients metrics")
@@ -112,6 +120,18 @@ macro_rules! notification_latency {
     };
 }
 
+#[macro_export]
+macro_rules! channel_delay {
+    ($start:expr, $name:expr) => {
+        let now = Utc::now();
+        let duration = abs_diff_utc_as_sec($start, now);
+        let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
+        CHANNEL_DELAY
+            .with_label_values(&[version.as_str(), $name])
+            .observe(duration);
+    };
+}
+
 /// Initializes and returns a `PrometheusMetrics` instance configured for the application.
 ///
 /// This function sets up Prometheus metrics for various application processes, including incoming and external API requests, queue counters, and queue drainer latencies.
@@ -154,6 +174,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(NOTIFICATION_LATENCY.to_owned()))
         .expect("Failed to register notification latency metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(CHANNEL_DELAY.to_owned()))
+        .expect("Failed to register channel delay metrics");
 
     prometheus
         .registry
