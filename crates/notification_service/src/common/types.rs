@@ -7,6 +7,7 @@
 */
 use crate::{
     redis::{commands::read_client_notification, types::NotificationData},
+    tools::prometheus::RWLOCK_DELAY,
     NotificationPayload,
 };
 
@@ -17,6 +18,8 @@ use shared::redis::types::RedisConnectionPool;
 use std::sync::Arc;
 use strum_macros::{Display, EnumIter, EnumString};
 use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::{RwLockReadGuard, RwLockWriteGuard, TryLockError};
+use tokio::time::Instant;
 use tonic::Status;
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
@@ -124,8 +127,8 @@ pub enum SenderType {
 
 #[derive(Clone, Debug)]
 pub enum SessionMap {
-    Single((ClientTx, Arc<RwLock<ActiveNotification>>)), // A single session with a (ClientTx, Counter)
-    Multi(FxHashMap<SessionID, (ClientTx, Arc<RwLock<ActiveNotification>>)>), // Multiple sessions
+    Single((ClientTx, Arc<MonitoredRwLock<ActiveNotification>>)), // A single session with a (ClientTx, Counter)
+    Multi(FxHashMap<SessionID, (ClientTx, Arc<MonitoredRwLock<ActiveNotification>>)>), // Multiple sessions
 }
 
 pub type ReaderMap = FxHashMap<ClientId, SessionMap>;
@@ -138,4 +141,117 @@ pub enum TokenOrigin {
     RiderApp,
     DriverDashboard,
     RiderDashboard,
+}
+
+#[derive(Debug)]
+pub enum RwLockName {
+    ActiveNotificationStore,
+    ClientTxStore,
+}
+
+impl RwLockName {
+    fn as_str(&self) -> &'static str {
+        match self {
+            RwLockName::ActiveNotificationStore => "active-notification-store",
+            RwLockName::ClientTxStore => "client-tx-store",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum RwLockOperation {
+    Read,
+    Write,
+    TryRead,
+    TryWrite,
+}
+
+impl RwLockOperation {
+    fn as_str(&self) -> &'static str {
+        match self {
+            RwLockOperation::Read => "read",
+            RwLockOperation::Write => "write",
+            RwLockOperation::TryRead => "try_read",
+            RwLockOperation::TryWrite => "try_write",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MonitoredRwLock<T> {
+    lock: RwLock<T>,
+}
+
+impl<T> MonitoredRwLock<T> {
+    pub fn new(data: T) -> Self {
+        Self {
+            lock: RwLock::new(data),
+        }
+    }
+
+    pub async fn read(
+        &self,
+        name: RwLockName,
+        operation_type: RwLockOperation,
+    ) -> RwLockReadGuard<'_, T> {
+        let start = Instant::now();
+        let guard = self.lock.read().await;
+        let duration = start.elapsed().as_secs_f64();
+        RWLOCK_DELAY
+            .with_label_values(&[name.as_str(), operation_type.as_str()])
+            .observe(duration);
+        guard
+    }
+
+    pub async fn write(
+        &self,
+        name: RwLockName,
+        operation_type: RwLockOperation,
+    ) -> RwLockWriteGuard<'_, T> {
+        let start = Instant::now();
+        let guard = self.lock.write().await;
+        let duration = start.elapsed().as_secs_f64();
+        RWLOCK_DELAY
+            .with_label_values(&[name.as_str(), operation_type.as_str()])
+            .observe(duration);
+        guard
+    }
+
+    pub fn try_read(
+        &self,
+        name: RwLockName,
+        operation_type: RwLockOperation,
+    ) -> Result<RwLockReadGuard<'_, T>, TryLockError> {
+        let start = Instant::now();
+
+        match self.lock.try_read() {
+            Ok(guard) => {
+                let duration = start.elapsed().as_secs_f64();
+                RWLOCK_DELAY
+                    .with_label_values(&[name.as_str(), operation_type.as_str()])
+                    .observe(duration);
+                Ok(guard)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn try_write(
+        &self,
+        name: RwLockName,
+        operation_type: RwLockOperation,
+    ) -> Result<RwLockWriteGuard<'_, T>, TryLockError> {
+        let start = Instant::now();
+
+        match self.lock.try_write() {
+            Ok(guard) => {
+                let duration = start.elapsed().as_secs_f64();
+                RWLOCK_DELAY
+                    .with_label_values(&[name.as_str(), operation_type.as_str()])
+                    .observe(duration);
+                Ok(guard)
+            }
+            Err(err) => Err(err),
+        }
+    }
 }

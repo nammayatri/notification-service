@@ -95,29 +95,26 @@ pub async fn read_client_notifications(
         .await?;
     let notifications = decode_stream::<NotificationData>(notifications)?;
 
+    let regex = match Regex::new(r"N([0-9a-fA-F-]+)\{") {
+        Ok(regex) => regex,
+        Err(err) => {
+            error!("Regex Parsing Failed: {}", err);
+            return Err(err.into());
+        }
+    };
+
     let mut result = Vec::default();
     for (key, val) in notifications {
-        match Regex::new(r"N([0-9a-fA-F-]+)\{") {
-            Ok(regex) => {
-                match regex
-                    .captures(&key)
-                    .and_then(|captures| captures.get(1).map(|m| m.as_str()))
-                {
-                    Some(client_id) => result.push((ClientId(client_id.to_string()), val)),
-                    None => {
-                        error!("Regex Match Failed For Key : {}, Shard : {}", key, shard);
-                        continue;
-                    }
-                }
-            }
-            Err(err) => {
-                error!(
-                    "Regex Parsing Failed For Key : {}, Shard : {}, Error : {}",
-                    key, shard, err
-                );
+        match regex
+            .captures(&key)
+            .and_then(|captures| captures.get(1).map(|m| m.as_str()))
+        {
+            Some(client_id) => result.push((ClientId(client_id.to_string()), val)),
+            None => {
+                error!("Regex Match Failed For Key: {}, Shard: {}", key, shard);
                 continue;
             }
-        };
+        }
     }
 
     Ok(result)

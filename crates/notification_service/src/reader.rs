@@ -37,7 +37,7 @@ use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
 use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{self, mpsc::UnboundedReceiver, RwLock},
+    sync::{self, mpsc::UnboundedReceiver},
     time::sleep,
 };
 use tracing::*;
@@ -118,7 +118,7 @@ async fn clear_expired_notification(
 
 #[macros::measure_duration]
 async fn handle_client_disconnection_or_failure(
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     shard: &Shard,
     client_id: &ClientId,
     session_id: &Option<SessionID>,
@@ -129,7 +129,7 @@ async fn handle_client_disconnection_or_failure(
     let mut client = clients_tx
         .get(shard.inner() as usize)
         .expect("This error is impossible")
-        .write()
+        .write(RwLockName::ClientTxStore, RwLockOperation::Write)
         .await;
 
     match client.get_mut(client_id) {
@@ -159,7 +159,7 @@ async fn client_reciever(
     redis_pool: Arc<RedisConnectionPool>,
     client_id: ClientId,
     client_req: SenderType,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     max_shards: u64,
 ) {
     let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
@@ -169,7 +169,7 @@ async fn client_reciever(
             CONNECTED_CLIENTS.inc();
 
             let client_reciever_clients_tx_write_start_time = tokio::time::Instant::now();
-            let active_notification = Arc::new(RwLock::new(
+            let active_notification = Arc::new(MonitoredRwLock::new(
                 ActiveNotification::new(&redis_pool, &client_id, &shard).await,
             ));
 
@@ -177,7 +177,7 @@ async fn client_reciever(
                 let mut client = clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
-                    .write()
+                    .write(RwLockName::ClientTxStore, RwLockOperation::Write)
                     .await;
 
                 if let Some(SessionMap::Multi(client)) = client.get_mut(&client_id) {
@@ -191,7 +191,7 @@ async fn client_reciever(
                 clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
-                    .write()
+                    .write(RwLockName::ClientTxStore, RwLockOperation::Write)
                     .await
                     .insert(
                         client_id,
@@ -220,13 +220,13 @@ async fn client_reciever(
                 if let Some(SessionMap::Multi(client)) = clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
-                    .write()
+                    .write(RwLockName::ClientTxStore, RwLockOperation::Write)
                     .await
                     .get_mut(&client_id)
                 {
                     if let Some((_, active_notification)) = client.get_mut(&session_id) {
                         active_notification
-                            .write()
+                            .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                             .await
                             .acknowledge(&notification_id);
                     } else {
@@ -238,12 +238,12 @@ async fn client_reciever(
             } else if let Some(SessionMap::Single((_, active_notification))) = clients_tx
                 .get(shard.inner() as usize)
                 .expect("This error is impossible!")
-                .write()
+                .write(RwLockName::ClientTxStore, RwLockOperation::Write)
                 .await
                 .get_mut(&client_id)
             {
                 active_notification
-                    .write()
+                    .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                     .await
                     .acknowledge(&notification_id);
             } else {
@@ -256,7 +256,7 @@ async fn client_reciever(
 async fn client_reciever_looper(
     redis_pool: Arc<RedisConnectionPool>,
     mut read_notification_rx: UnboundedReceiver<(ClientId, SenderType, DateTime<Utc>)>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     max_shards: u64,
 ) {
     while let Some((client_id, client_tx, sent_at)) = read_notification_rx.recv().await {
@@ -277,7 +277,7 @@ async fn client_reciever_looper(
 #[macros::measure_duration]
 async fn retry_notifications(
     redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     read_all_connected_client_notifications: bool,
 ) {
     let read_client_notifications_batch_task: Vec<_> = clients_tx
@@ -288,7 +288,7 @@ async fn retry_notifications(
             let (redis_pool_clone, clients_tx_clone) = (redis_pool.clone(), clients_tx.clone());
             async move {
                 let client_ids = clients
-                    .read()
+                    .read(RwLockName::ClientTxStore,RwLockOperation::Read)
                     .await
                     .iter()
                     .filter_map(|(client_id, client)| {
@@ -298,7 +298,7 @@ async fn retry_notifications(
                         }
                         match client {
                             SessionMap::Single((_, active_notification)) => {
-                                if let Ok(active_notification) = active_notification.try_read() {
+                                if let Ok(active_notification) = active_notification.try_read(RwLockName::ActiveNotificationStore,RwLockOperation::TryRead) {
                                     if active_notification.count() > 0 {
                                         return Some(client_id.to_owned())
                                     }
@@ -307,7 +307,7 @@ async fn retry_notifications(
                             }
                             SessionMap::Multi(client) => {
                                 let has_active = client.iter().any(|(_, (_, active_notification))| {
-                                    if let Ok(active_notification) = active_notification.try_read() {
+                                    if let Ok(active_notification) = active_notification.try_read(RwLockName::ActiveNotificationStore,RwLockOperation::TryRead) {
                                         if active_notification.count() > 0 {
                                             return true;
                                         }
@@ -335,17 +335,17 @@ async fn retry_notifications(
                                  match clients_tx_clone
                                     .get(shard.inner() as usize)
                                     .expect("This error is impossible")
-                                    .read()
+                                    .read(RwLockName::ClientTxStore,RwLockOperation::Read)
                                     .await
                                     .get(&client_id) {
                                         Some(SessionMap::Single((_, active_notification))) => {
-                                            if let Ok(active_notification) = active_notification.try_write() {
+                                            if let Ok(active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
                                                 active_notification.refresh()
                                             }
                                         },
                                         Some(SessionMap::Multi(client)) => {
                                             for (_, (_, active_notification)) in client.iter() {
-                                                if let Ok(active_notification) = active_notification.try_write() {
+                                                if let Ok(active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
                                                     active_notification.refresh()
                                                 }
                                             }
@@ -383,7 +383,7 @@ async fn retry_notifications(
                                         match clients_tx_clone
                                             .get(shard.inner() as usize)
                                             .expect("This error is impossible")
-                                            .read()
+                                            .read(RwLockName::ClientTxStore,RwLockOperation::Read)
                                             .await
                                             .get(&client_id) {
                                                 Some(SessionMap::Single((client_tx, _))) => {
@@ -436,7 +436,7 @@ async fn retry_notifications(
 
 async fn retry_notifications_looper(
     redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     read_all_connected_client_notifications: bool,
     delay: Duration,
 ) {
@@ -453,7 +453,7 @@ async fn retry_notifications_looper(
 
 async fn active_notification(
     redis_pool: &RedisConnectionPool,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     active_notification_receiver_stream: &mut UnboundedReceiver<(String, String, DateTime<Utc>)>,
     max_shards: u64,
 ) {
@@ -466,7 +466,7 @@ async fn active_notification(
         let all_clients_tx = match clients_tx
             .get(shard.inner() as usize)
             .expect("This error is impossible")
-            .read()
+            .read(RwLockName::ClientTxStore, RwLockOperation::Read)
             .await
             .get(&client_id)
         {
@@ -495,13 +495,13 @@ async fn active_notification(
                 match clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible")
-                    .write()
+                    .write(RwLockName::ClientTxStore, RwLockOperation::Write)
                     .await
                     .get_mut(&client_id)
                 {
                     Some(SessionMap::Single((_, active_notification))) => {
                         active_notification
-                            .write()
+                            .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                             .await
                             .update(notifications.to_owned());
                     }
@@ -509,7 +509,10 @@ async fn active_notification(
                         stream::iter(client.iter_mut())
                             .for_each_concurrent(None, |(_, (_, active_notification))| async {
                                 active_notification
-                                    .write()
+                                    .write(
+                                        RwLockName::ActiveNotificationStore,
+                                        RwLockOperation::Write,
+                                    )
                                     .await
                                     .update(notifications.to_owned());
                             })
@@ -556,7 +559,7 @@ async fn active_notification(
 
 async fn active_notification_looper(
     redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<Vec<RwLock<ReaderMap>>>,
+    clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     max_shards: u64,
 ) {
     let pubsub_channel_key = pubsub_channel_key();
@@ -585,9 +588,9 @@ pub async fn run_notification_reader(
     max_shards: u64,
     read_all_connected_client_notifications: bool,
 ) {
-    let clients_tx: Arc<Vec<RwLock<ReaderMap>>> = Arc::new(
+    let clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>> = Arc::new(
         (0..max_shards)
-            .map(|_| RwLock::new(FxHashMap::default()))
+            .map(|_| MonitoredRwLock::new(FxHashMap::default()))
             .collect(),
     );
 
