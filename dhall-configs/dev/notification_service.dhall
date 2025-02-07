@@ -11,6 +11,7 @@ let redis_cfg = {
     default_hash_ttl = 3600,
     stream_read_count = 100,
     partition = 0,
+    broadcast_channel_capacity = 10000
 }
 
 let LogLevel = < TRACE | DEBUG | INFO | WARN | ERROR | OFF >
