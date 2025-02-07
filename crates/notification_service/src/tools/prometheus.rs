@@ -217,4 +217,9 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .expect("Failed to register expired notifications metrics");
 
     prometheus
+        .registry
+        .register(Box::new(RWLOCK_DELAY.to_owned()))
+        .expect("Failed to register rwlock delay metric");
+
+    prometheus
 }
