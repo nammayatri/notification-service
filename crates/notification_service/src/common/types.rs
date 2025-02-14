@@ -255,3 +255,9 @@ impl<T> MonitoredRwLock<T> {
         }
     }
 }
+
+#[derive(Deserialize)]
+pub struct NotificationMessage {
+    pub client_id: String,
+    pub timestamp: DateTime<Utc>,
+}

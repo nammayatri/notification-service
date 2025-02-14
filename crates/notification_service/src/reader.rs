@@ -454,10 +454,19 @@ async fn retry_notifications_looper(
 async fn active_notification(
     redis_pool: &RedisConnectionPool,
     clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
-    active_notification_receiver_stream: &mut UnboundedReceiver<(String, String, DateTime<Utc>)>,
+    active_notification_receiver_stream: &mut UnboundedReceiver<(
+        String,
+        NotificationMessage,
+        DateTime<Utc>,
+    )>,
     max_shards: u64,
 ) {
-    while let Some((_, client_id, sent_at)) = active_notification_receiver_stream.recv().await {
+    while let Some((_, message, sent_at)) = active_notification_receiver_stream.recv().await {
+        let NotificationMessage {
+            client_id,
+            timestamp,
+        } = message;
+        channel_delay!(timestamp, "active_notification_pubsub_delay");
         channel_delay!(sent_at, "active_notification");
 
         let client_id = ClientId(client_id);
@@ -564,7 +573,7 @@ async fn active_notification_looper(
 ) {
     let pubsub_channel_key = pubsub_channel_key();
     if let Ok(mut active_notification_receiver_stream) = redis_pool
-        .subscribe_channel::<String>(pubsub_channel_key)
+        .subscribe_channel::<NotificationMessage>(pubsub_channel_key)
         .await
     {
         active_notification(
