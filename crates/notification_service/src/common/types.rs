@@ -257,7 +257,8 @@ impl<T> MonitoredRwLock<T> {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NotificationMessage {
-    pub client_id: String,
+    pub stream_id: String,
     pub timestamp: DateTime<Utc>,
 }

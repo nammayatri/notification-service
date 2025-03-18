@@ -463,13 +463,13 @@ async fn active_notification(
 ) {
     while let Some((_, message, sent_at)) = active_notification_receiver_stream.recv().await {
         let NotificationMessage {
-            client_id,
+            stream_id,
             timestamp,
         } = message;
         channel_delay!(timestamp, "active_notification_pubsub_delay");
         channel_delay!(sent_at, "active_notification");
 
-        let client_id = ClientId(client_id);
+        let client_id = ClientId(stream_id);
         let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
 
         let all_clients_tx = match clients_tx
