@@ -32,10 +32,12 @@ serde_path_to_error = "0.1.9"
 sha256 = "1.1.2"
 strum = "0.24.0"
 strum_macros = "0.24.1"
-tonic = "0.10.2"
-prost = "0.12.3"
+tonic = { version = "0.14.2", features = ["deflate"] }
+prost = "0.14"
+tonic-prost = "0.14"
 tower = "0.4.13"
 tracing = "0.1.37"
+flate2 = "1.1.2"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter", "registry", "json"] }
 tracing-bunyan-formatter = "0.3.9"
@@ -59,4 +61,5 @@ shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "c1536c
 # shared = { path = "/Users/khuzema.khomosi/Documents/shared-kernel-rs/crates/shared" }
 
 [build-dependencies]
-tonic-build = "0.10.2"
+tonic-prost-build = "0.14.2"
+

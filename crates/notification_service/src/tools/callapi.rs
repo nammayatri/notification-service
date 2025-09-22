@@ -8,10 +8,10 @@
 
 use crate::tools::prometheus::CALL_EXTERNAL_API;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue},
     Client, Method, Response, Url,
+    header::{HeaderMap, HeaderName, HeaderValue},
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use shared::call_external_api;
 use std::{fmt::Debug, str::FromStr};
 use tracing::{error, info};

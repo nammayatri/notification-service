@@ -11,8 +11,8 @@ extern crate shared;
 
 use actix_web_prom::PrometheusMetrics;
 use prometheus::{
-    histogram_opts, opts, register_histogram_vec, register_int_counter, register_int_gauge,
-    HistogramVec, IntCounter, IntGauge,
+    HistogramVec, IntCounter, IntGauge, histogram_opts, opts, register_histogram_vec,
+    register_int_counter, register_int_gauge,
 };
 pub use shared::tools::prometheus::*;
 

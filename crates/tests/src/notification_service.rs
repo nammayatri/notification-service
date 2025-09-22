@@ -16,7 +16,7 @@ mod tests {
     use notification_service::redis::keys::notification_client_key;
     use notification_service::redis::types::NotificationData;
     use rand::Rng;
-    use shared::tools::logger::{error, info, setup_tracing, LogLevel, LoggerConfig};
+    use shared::tools::logger::{LogLevel, LoggerConfig, error, info, setup_tracing};
     use std::str::FromStr;
     use std::time::Duration;
     use std::{collections::HashMap, sync::Arc};
@@ -136,14 +136,28 @@ mod tests {
         let data = [
             ("entity.id", "181a66a5-749c-4c9f-aea5-a5418b981cf0"),
             ("entity.type", "SearchRequest"),
-            ("entity.data", "{\"searchRequestValidTill\":\"2023-12-23T13:45:38.057846262Z\",\"searchRequestId\":\"181a66a5-749c-4c9f-aea5-a5418b981cf0\",\"startTime\":\"2022-08-15T13:43:30.713006Z\",\"baseFare\":100.99,\"distance\":6066,\"distanceToPickup\":316,\"fromLocation\":{\"area\":\"B-3, CA-1/99, Ganapathi Temple Rd, KHB Colony, 5th Block, Koramangala, Bengaluru, Karnataka 560095, India\",\"state\":null,\"createdAt\":\"2022-08-15T13:43:37.771311059Z\",\"country\":null,\"building\":null,\"door\":null,\"street\":null,\"lat\":12.9362698,\"city\":null,\"areaCode\":null,\"id\":\"ef9ff2e4-592b-4b00-bb07-e8d9c4965d84\",\"lon\":77.6177708,\"updatedAt\":\"2022-08-15T13:43:37.771311059Z\"},\"toLocation\":{\"area\":\"Level 8, Raheja towers, 23-24, Mahatma Gandhi Rd, Yellappa Chetty Layout, Sivanchetti Gardens, Bengaluru, Karnataka 560001, India\",\"state\":null,\"createdAt\":\"2022-08-15T13:43:37.771378308Z\",\"country\":null,\"building\":null,\"door\":null,\"street\":null,\"lat\":12.9730611,\"city\":null,\"areaCode\":null,\"id\":\"3780b236-715b-4822-b834-96bf0800c8d6\",\"lon\":77.61707299999999,\"updatedAt\":\"2022-08-15T13:43:37.771378308Z\"},\"durationToPickup\":139}"),
+            (
+                "entity.data",
+                "{\"searchRequestValidTill\":\"2023-12-23T13:45:38.057846262Z\",\"searchRequestId\":\"181a66a5-749c-4c9f-aea5-a5418b981cf0\",\"startTime\":\"2022-08-15T13:43:30.713006Z\",\"baseFare\":100.99,\"distance\":6066,\"distanceToPickup\":316,\"fromLocation\":{\"area\":\"B-3, CA-1/99, Ganapathi Temple Rd, KHB Colony, 5th Block, Koramangala, Bengaluru, Karnataka 560095, India\",\"state\":null,\"createdAt\":\"2022-08-15T13:43:37.771311059Z\",\"country\":null,\"building\":null,\"door\":null,\"street\":null,\"lat\":12.9362698,\"city\":null,\"areaCode\":null,\"id\":\"ef9ff2e4-592b-4b00-bb07-e8d9c4965d84\",\"lon\":77.6177708,\"updatedAt\":\"2022-08-15T13:43:37.771311059Z\"},\"toLocation\":{\"area\":\"Level 8, Raheja towers, 23-24, Mahatma Gandhi Rd, Yellappa Chetty Layout, Sivanchetti Gardens, Bengaluru, Karnataka 560001, India\",\"state\":null,\"createdAt\":\"2022-08-15T13:43:37.771378308Z\",\"country\":null,\"building\":null,\"door\":null,\"street\":null,\"lat\":12.9730611,\"city\":null,\"areaCode\":null,\"id\":\"3780b236-715b-4822-b834-96bf0800c8d6\",\"lon\":77.61707299999999,\"updatedAt\":\"2022-08-15T13:43:37.771378308Z\"},\"durationToPickup\":139}",
+            ),
             ("id", &uuid::Uuid::new_v4().to_string()),
             ("category", "NEW_RIDE_AVAILABLE"),
             ("title", "New ride available for offering"),
-            ("body", "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters"),
+            (
+                "body",
+                "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters",
+            ),
             ("show", "SHOW"),
-            ("created_at", &Utc::now().format("%Y-%m-%dT%H:%M:%S%.fZ").to_string()),
-            ("ttl", &(Utc::now() + Duration::from_secs(30)).format("%Y-%m-%dT%H:%M:%S%.fZ").to_string())
+            (
+                "created_at",
+                &Utc::now().format("%Y-%m-%dT%H:%M:%S%.fZ").to_string(),
+            ),
+            (
+                "ttl",
+                &(Utc::now() + Duration::from_secs(30))
+                    .format("%Y-%m-%dT%H:%M:%S%.fZ")
+                    .to_string(),
+            ),
         ];
 
         app_state

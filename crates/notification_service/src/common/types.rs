@@ -6,18 +6,18 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 use crate::{
+    NotificationPayload,
     redis::{commands::read_client_notification, types::NotificationData},
     tools::prometheus::RWLOCK_DELAY,
-    NotificationPayload,
 };
 
 use chrono::{DateTime, Utc};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use shared::redis::types::RedisConnectionPool;
 use std::sync::Arc;
 use strum_macros::{Display, EnumIter, EnumString};
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::{RwLock, mpsc::Sender};
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard, TryLockError};
 use tokio::time::Instant;
 use tonic::Status;
@@ -56,7 +56,7 @@ pub struct StreamEntry(pub String);
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 #[macros::impl_getter]
-pub struct ActiveNotification(pub FxHashMap<NotificationId, Ttl>);
+pub struct ActiveNotification(pub FxHashSet<NotificationId>);
 
 impl ActiveNotification {
     pub async fn new(
@@ -64,21 +64,21 @@ impl ActiveNotification {
         client_id: &ClientId,
         shard: &Shard,
     ) -> Self {
-        let mut counter = FxHashMap::default();
+        let mut notifications_set = FxHashSet::default();
         if let Ok(notifications) = read_client_notification(redis_pool, client_id, shard).await {
             for notification in notifications {
-                counter.insert(notification.id, notification.ttl);
+                notifications_set.insert(notification.id);
             }
         }
-        Self(counter)
+        Self(notifications_set)
     }
 
     pub fn update(&self, notifications: Vec<NotificationData>) -> Self {
-        let mut counter = FxHashMap::default();
+        let mut notifications_set = FxHashSet::default();
         for notification in notifications {
-            counter.insert(notification.id, notification.ttl);
+            notifications_set.insert(notification.id);
         }
-        Self(counter)
+        Self(notifications_set)
     }
 
     pub fn count(&self) -> usize {
@@ -90,18 +90,8 @@ impl ActiveNotification {
     }
 
     pub fn refresh(&self) {
-        let now = Utc::now();
-
-        let expired_notifications: Vec<NotificationId> = self
-            .inner()
-            .iter()
-            .filter(|(_, ttl)| (**ttl).inner() < now)
-            .map(|(id, _)| id.to_owned())
-            .collect();
-
-        for id in expired_notifications {
-            self.inner().remove(&id);
-        }
+        // NOTE: Refresh now does nothing since notifications don't expire based on TTL
+        // They persist until explicitly removed by client
     }
 }
 

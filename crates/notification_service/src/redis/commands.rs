@@ -164,3 +164,34 @@ pub async fn clean_up_notification(
         .await?;
     Ok(())
 }
+
+#[macros::measure_duration]
+pub async fn remove_notification_by_id(
+    redis_pool: &RedisConnectionPool,
+    client_id: &str,
+    notification_id: &str,
+    Shard(shard): &Shard,
+) -> Result<bool> {
+    // First, get the notification stream ID for this notification ID
+    if let Some(notification_stream_id) =
+        get_notification_stream_id(redis_pool, notification_id).await?
+    {
+        // Remove from the client's notification stream
+        redis_pool
+            .xdel(
+                &notification_client_key(client_id, shard),
+                &notification_stream_id.inner(),
+            )
+            .await?;
+
+        // Clean up the notification stream ID mapping
+        redis_pool
+            .delete_key(&notification_stream_key(notification_id))
+            .await?;
+
+        Ok(true)
+    } else {
+        // Notification ID not found
+        Ok(false)
+    }
+}

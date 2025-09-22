@@ -16,8 +16,8 @@ use crate::{
     reader::run_notification_reader,
     tools::prometheus::prometheus_metrics,
 };
-use actix_web::{web, App, HttpResponse, HttpServer};
-use anyhow::{anyhow, Result};
+use actix_web::{App, HttpResponse, HttpServer, web};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use shared::tools::logger::setup_tracing;
 use std::{
@@ -25,12 +25,13 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
 };
 use tokio::{
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
     sync::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
 };
+use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
 use tracing::*;
 
@@ -102,8 +103,16 @@ pub async fn run_server() -> Result<()> {
     let notification_service = NotificationService::new(read_notification_tx, app_state);
     let grpc_server = Server::builder()
         .layer(middleware)
-        .add_service(NotificationServer::new(notification_service))
-        .add_service(HealthServer::new(Healthcheck))
+        .add_service(
+            NotificationServer::new(notification_service)
+                .accept_compressed(CompressionEncoding::Deflate) // accept gzip requests
+                .send_compressed(CompressionEncoding::Deflate), // send gzip responses
+        )
+        .add_service(
+            HealthServer::new(Healthcheck)
+                .accept_compressed(CompressionEncoding::Deflate)
+                .send_compressed(CompressionEncoding::Deflate),
+        )
         .serve(SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::UNSPECIFIED,
             grpc_port,

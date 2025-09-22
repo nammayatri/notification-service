@@ -9,8 +9,8 @@
 use std::{cmp::Ordering, str::FromStr};
 
 use crate::{
-    redis::types::NotificationData, tools::error::AppError, tools::prometheus::MEASURE_DURATION,
-    Entity, NotificationPayload,
+    Entity, NotificationPayload, redis::types::NotificationData, tools::error::AppError,
+    tools::prometheus::MEASURE_DURATION,
 };
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};

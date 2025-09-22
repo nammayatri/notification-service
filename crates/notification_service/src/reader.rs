@@ -18,20 +18,19 @@ use crate::{
     notification_latency,
     redis::{
         commands::{
-            clean_up_notification, read_client_notification, read_client_notifications,
-            set_notification_stream_id,
+            read_client_notification, read_client_notifications, set_notification_stream_id,
         },
         keys::*,
         types::NotificationData,
     },
     tools::prometheus::{
-        CHANNEL_DELAY, CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION,
-        NOTIFICATION_LATENCY, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+        CHANNEL_DELAY, CONNECTED_CLIENTS, MEASURE_DURATION, NOTIFICATION_LATENCY,
+        RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use futures::{future::join_all, stream, StreamExt};
+use futures::{StreamExt, future::join_all, stream};
 use rustc_hash::FxHashMap;
 use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
@@ -44,11 +43,11 @@ use tracing::*;
 
 #[macros::measure_duration]
 async fn send_notification(
-    client_id: &ClientId,
+    _client_id: &ClientId,
     client_tx: &ClientTx,
     notification: NotificationData,
     redis_pool: &RedisConnectionPool,
-    shard: &Shard,
+    _shard: &Shard,
 ) -> Result<()> {
     let _ = set_notification_stream_id(
         redis_pool,
@@ -75,45 +74,48 @@ async fn send_notification(
         "NACK"
     );
 
-    let _ = clean_up_notification(
-        redis_pool,
-        &client_id.inner(),
-        &notification.stream_id.inner(),
-        shard,
-    )
-    .await
-    .map_err(|err| {
-        error!(
-            "[Notification Service Error] - Error in clean_up_notification : {}",
-            err
-        )
-    });
+    // NOTE: Removed automatic cleanup - notifications now persist until explicitly removed by client
+    // This ensures notifications survive service restarts and are only removed when client requests it
 
     Ok(())
 }
 
-#[macros::measure_duration]
-async fn clear_expired_notification(
-    redis_pool: &RedisConnectionPool,
-    shard: &Shard,
-    client_id: &str,
-    notification_stream_id: &StreamEntry,
-) {
-    EXPIRED_NOTIFICATIONS.inc();
+// NOTE: clear_expired_notification function removed as notifications now persist until explicitly removed
 
-    let _ = clean_up_notification(
-        redis_pool,
-        client_id,
-        &notification_stream_id.inner(),
-        shard,
-    )
-    .await
-    .map_err(|err| {
-        error!(
-            "[Notification Service Error] - Error in clean_up_notification : {}",
-            err
-        )
-    });
+#[macros::measure_duration]
+async fn send_all_queued_notifications_to_client(
+    redis_pool: &RedisConnectionPool,
+    client_id: &ClientId,
+    client_tx: &ClientTx,
+    shard: &Shard,
+) {
+    match read_client_notification(redis_pool, client_id, shard).await {
+        Ok(notifications) => {
+            info!(
+                "Sending {} queued notifications to client {}",
+                notifications.len(),
+                client_id.inner()
+            );
+            for notification in notifications {
+                if let Err(err) =
+                    send_notification(client_id, client_tx, notification, redis_pool, shard).await
+                {
+                    warn!(
+                        "Failed to send queued notification to client {}: {}",
+                        client_id.inner(),
+                        err
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            error!(
+                "Failed to read queued notifications for client {}: {:?}",
+                client_id.inner(),
+                err
+            );
+        }
+    }
 }
 
 #[macros::measure_duration]
@@ -173,6 +175,7 @@ async fn client_reciever(
                 ActiveNotification::new(&redis_pool, &client_id, &shard).await,
             ));
 
+            // Store the client connection info
             if let Some(session_id) = session_id {
                 let mut client = clients_tx
                     .get(shard.inner() as usize)
@@ -181,11 +184,11 @@ async fn client_reciever(
                     .await;
 
                 if let Some(SessionMap::Multi(client)) = client.get_mut(&client_id) {
-                    client.insert(session_id, (client_tx, active_notification));
+                    client.insert(session_id, (client_tx.clone(), active_notification));
                 } else {
                     let mut client_session = FxHashMap::default();
-                    client_session.insert(session_id, (client_tx, active_notification));
-                    client.insert(client_id, SessionMap::Multi(client_session));
+                    client_session.insert(session_id, (client_tx.clone(), active_notification));
+                    client.insert(client_id.clone(), SessionMap::Multi(client_session));
                 }
             } else {
                 clients_tx
@@ -194,10 +197,14 @@ async fn client_reciever(
                     .write(RwLockName::ClientTxStore, RwLockOperation::Write)
                     .await
                     .insert(
-                        client_id,
-                        SessionMap::Single((client_tx, active_notification)),
+                        client_id.clone(),
+                        SessionMap::Single((client_tx.clone(), active_notification)),
                     );
             };
+
+            // Send all queued notifications to the newly connected client
+            send_all_queued_notifications_to_client(&redis_pool, &client_id, &client_tx, &shard)
+                .await;
 
             measure_latency_duration!(
                 "client_reciever_clients_tx_write",
@@ -230,10 +237,14 @@ async fn client_reciever(
                             .await
                             .acknowledge(&notification_id);
                     } else {
-                        error!("[Notification Service Error] - SessionId not found in the Client Shard");
+                        error!(
+                            "[Notification Service Error] - SessionId not found in the Client Shard"
+                        );
                     }
                 } else {
-                    error!("[Notification Service Error] - Multi Client Session not found for the Client");
+                    error!(
+                        "[Notification Service Error] - Multi Client Session not found for the Client"
+                    );
                 }
             } else if let Some(SessionMap::Single((_, active_notification))) = clients_tx
                 .get(shard.inner() as usize)
@@ -367,57 +378,48 @@ async fn retry_notifications(
                                     RETRIED_NOTIFICATIONS.inc();
                                 }
 
-                                if notification.ttl.inner() < Utc::now() {
-                                    clear_expired_notification(
-                                        &Arc::clone(&redis_pool_clone),
-                                        &shard.clone(),
-                                        &client_id.inner(),
-                                        &notification.stream_id.clone(),
-                                    )
-                                    .await;
-                                } else {
-                                    let read_and_process_notification_clients_tx_read_start_time =
-                                        tokio::time::Instant::now();
+                                // NOTE: Removed TTL-based expiration - notifications persist until explicitly removed
+                                let read_and_process_notification_clients_tx_read_start_time =
+                                    tokio::time::Instant::now();
 
-                                    let clients_tx =
-                                        match clients_tx_clone
-                                            .get(shard.inner() as usize)
-                                            .expect("This error is impossible")
-                                            .read(RwLockName::ClientTxStore,RwLockOperation::Read)
-                                            .await
-                                            .get(&client_id) {
-                                                Some(SessionMap::Single((client_tx, _))) => {
-                                                    vec![client_tx.clone()]
-                                                },
-                                                Some(SessionMap::Multi(client)) => {
-                                                    client.iter().map(|(_, (client_tx, _))| client_tx.clone()).collect()
-                                                }
-                                                None => {
-                                                    warn!(
-                                                        "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                                                        client_id
-                                                    );
-                                                    vec![]
-                                                }
-                                            };
-
-                                    measure_latency_duration!(
-                                        "read_and_process_notification_clients_tx_read",
-                                        read_and_process_notification_clients_tx_read_start_time
-                                    );
-
-                                    for client_tx in clients_tx {
-                                        if let Err(err) = send_notification(
-                                            &client_id,
-                                            &client_tx,
-                                            notification.to_owned(),
-                                            &redis_pool_clone,
-                                            &shard,
-                                        )
+                                let clients_tx =
+                                    match clients_tx_clone
+                                        .get(shard.inner() as usize)
+                                        .expect("This error is impossible")
+                                        .read(RwLockName::ClientTxStore,RwLockOperation::Read)
                                         .await
-                                        {
-                                            warn!("[Send Failed] : {}", err);
-                                        }
+                                        .get(&client_id) {
+                                            Some(SessionMap::Single((client_tx, _))) => {
+                                                vec![client_tx.clone()]
+                                            },
+                                            Some(SessionMap::Multi(client)) => {
+                                                client.iter().map(|(_, (client_tx, _))| client_tx.clone()).collect()
+                                            }
+                                            None => {
+                                                warn!(
+                                                    "Client ({:?}) entry does not exist, client got disconnected intermittently.",
+                                                    client_id
+                                                );
+                                                vec![]
+                                            }
+                                        };
+
+                                measure_latency_duration!(
+                                    "read_and_process_notification_clients_tx_read",
+                                    read_and_process_notification_clients_tx_read_start_time
+                                );
+
+                                for client_tx in clients_tx {
+                                    if let Err(err) = send_notification(
+                                        &client_id,
+                                        &client_tx,
+                                        notification.to_owned(),
+                                        &redis_pool_clone,
+                                        &shard,
+                                    )
+                                    .await
+                                    {
+                                        warn!("[Send Failed] : {}", err);
                                     }
                                 }
                             }
@@ -534,27 +536,18 @@ async fn active_notification(
                 }
 
                 for notification in notifications {
-                    if notification.ttl.inner() < Utc::now() {
-                        clear_expired_notification(
+                    // NOTE: Removed TTL-based expiration - notifications persist until explicitly removed
+                    for client_tx in all_clients_tx.clone() {
+                        if let Err(err) = send_notification(
+                            &client_id,
+                            &client_tx,
+                            notification.to_owned(),
                             redis_pool,
                             &shard,
-                            &client_id.inner(),
-                            &notification.stream_id.clone(),
                         )
-                        .await;
-                    } else {
-                        for client_tx in all_clients_tx.clone() {
-                            if let Err(err) = send_notification(
-                                &client_id,
-                                &client_tx,
-                                notification.to_owned(),
-                                redis_pool,
-                                &shard,
-                            )
-                            .await
-                            {
-                                warn!("[Send Failed] : {}", err);
-                            }
+                        .await
+                        {
+                            warn!("[Send Failed] : {}", err);
                         }
                     }
                 }
