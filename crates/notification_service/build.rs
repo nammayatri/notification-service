@@ -8,9 +8,9 @@
 
 fn main() {
     #[allow(clippy::expect_used)]
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .compile(
+        .compile_protos(
             &[
                 "protos/notification_service.proto",
                 "protos/healthcheck.proto",

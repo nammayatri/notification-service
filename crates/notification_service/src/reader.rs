@@ -31,7 +31,7 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use futures::{future::join_all, stream, StreamExt};
+use futures::{StreamExt, future::join_all, stream};
 use rustc_hash::FxHashMap;
 use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
@@ -44,11 +44,12 @@ use tracing::*;
 
 #[macros::measure_duration]
 async fn send_notification(
-    client_id: &ClientId,
     client_tx: &ClientTx,
     notification: NotificationData,
     redis_pool: &RedisConnectionPool,
+    version: &str,
     shard: &Shard,
+    client_id: &ClientId,
 ) -> Result<()> {
     let _ = set_notification_stream_id(
         redis_pool,
@@ -75,19 +76,27 @@ async fn send_notification(
         "NACK"
     );
 
-    let _ = clean_up_notification(
-        redis_pool,
-        &client_id.inner(),
-        &notification.stream_id.inner(),
-        shard,
-    )
-    .await
-    .map_err(|err| {
-        error!(
-            "[Notification Service Error] - Error in clean_up_notification : {}",
-            err
+    // Check version and handle notification removal accordingly
+    if version == "v2" {
+        // For v2 clients, don't remove notifications automatically
+        // Notifications persist until explicitly removed by client
+        info!("Client version v2 detected - notifications will persist");
+    } else {
+        // For v1 clients, remove notifications automatically (legacy behavior)
+        let _ = clean_up_notification(
+            redis_pool,
+            &client_id.inner(),
+            &notification.stream_id.inner(),
+            shard,
         )
-    });
+        .await
+        .map_err(|err| {
+            error!(
+                "[Notification Service Error] - Error in clean_up_notification for v1 client : {:?}",
+                err
+            )
+        });
+    }
 
     Ok(())
 }
@@ -114,6 +123,50 @@ async fn clear_expired_notification(
             err
         )
     });
+}
+
+#[macros::measure_duration]
+async fn send_all_queued_notifications_to_client(
+    redis_pool: &RedisConnectionPool,
+    client_id: &ClientId,
+    client_tx: &ClientTx,
+    shard: &Shard,
+    version: &str,
+) {
+    match read_client_notification(redis_pool, client_id, shard).await {
+        Ok(notifications) => {
+            info!(
+                "Sending {} queued notifications to client {}",
+                notifications.len(),
+                client_id.inner()
+            );
+            for notification in notifications {
+                if let Err(err) = send_notification(
+                    client_tx,
+                    notification,
+                    redis_pool,
+                    version,
+                    shard,
+                    client_id,
+                )
+                .await
+                {
+                    warn!(
+                        "Failed to send queued notification to client {}: {}",
+                        client_id.inner(),
+                        err
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            error!(
+                "Failed to read queued notifications for client {}: {:?}",
+                client_id.inner(),
+                err
+            );
+        }
+    }
 }
 
 #[macros::measure_duration]
@@ -164,7 +217,7 @@ async fn client_reciever(
 ) {
     let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
     match client_req {
-        SenderType::ClientConnection((session_id, client_tx)) => {
+        SenderType::ClientConnection((session_id, client_tx, version)) => {
             info!("[Client Connected] : {:?}", client_id);
             CONNECTED_CLIENTS.inc();
 
@@ -173,6 +226,17 @@ async fn client_reciever(
                 ActiveNotification::new(&redis_pool, &client_id, &shard).await,
             ));
 
+            // Send all queued notifications to the newly connected client
+            send_all_queued_notifications_to_client(
+                &redis_pool,
+                &client_id,
+                &client_tx,
+                &shard,
+                &version,
+            )
+            .await;
+
+            // Store the client connection info
             if let Some(session_id) = session_id {
                 let mut client = clients_tx
                     .get(shard.inner() as usize)
@@ -181,10 +245,16 @@ async fn client_reciever(
                     .await;
 
                 if let Some(SessionMap::Multi(client)) = client.get_mut(&client_id) {
-                    client.insert(session_id, (client_tx, active_notification));
+                    client.insert(
+                        session_id,
+                        (client_tx, active_notification, version.clone()),
+                    );
                 } else {
                     let mut client_session = FxHashMap::default();
-                    client_session.insert(session_id, (client_tx, active_notification));
+                    client_session.insert(
+                        session_id,
+                        (client_tx, active_notification, version.clone()),
+                    );
                     client.insert(client_id, SessionMap::Multi(client_session));
                 }
             } else {
@@ -195,7 +265,7 @@ async fn client_reciever(
                     .await
                     .insert(
                         client_id,
-                        SessionMap::Single((client_tx, active_notification)),
+                        SessionMap::Single((client_tx, active_notification, version.clone())),
                     );
             };
 
@@ -224,18 +294,22 @@ async fn client_reciever(
                     .await
                     .get_mut(&client_id)
                 {
-                    if let Some((_, active_notification)) = client.get_mut(&session_id) {
+                    if let Some((_, active_notification, _)) = client.get_mut(&session_id) {
                         active_notification
                             .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                             .await
                             .acknowledge(&notification_id);
                     } else {
-                        error!("[Notification Service Error] - SessionId not found in the Client Shard");
+                        error!(
+                            "[Notification Service Error] - SessionId not found in the Client Shard"
+                        );
                     }
                 } else {
-                    error!("[Notification Service Error] - Multi Client Session not found for the Client");
+                    error!(
+                        "[Notification Service Error] - Multi Client Session not found for the Client"
+                    );
                 }
-            } else if let Some(SessionMap::Single((_, active_notification))) = clients_tx
+            } else if let Some(SessionMap::Single((_, active_notification, _))) = clients_tx
                 .get(shard.inner() as usize)
                 .expect("This error is impossible!")
                 .write(RwLockName::ClientTxStore, RwLockOperation::Write)
@@ -297,7 +371,7 @@ async fn retry_notifications(
                             return Some(client_id.to_owned());
                         }
                         match client {
-                            SessionMap::Single((_, active_notification)) => {
+                            SessionMap::Single((_, active_notification, _)) => {
                                 if let Ok(active_notification) = active_notification.try_read(RwLockName::ActiveNotificationStore,RwLockOperation::TryRead) {
                                     if active_notification.count() > 0 {
                                         return Some(client_id.to_owned())
@@ -306,7 +380,7 @@ async fn retry_notifications(
                                 None
                             }
                             SessionMap::Multi(client) => {
-                                let has_active = client.iter().any(|(_, (_, active_notification))| {
+                                let has_active = client.iter().any(|(_, (_, active_notification, _))| {
                                     if let Ok(active_notification) = active_notification.try_read(RwLockName::ActiveNotificationStore,RwLockOperation::TryRead) {
                                         if active_notification.count() > 0 {
                                             return true;
@@ -338,13 +412,13 @@ async fn retry_notifications(
                                     .read(RwLockName::ClientTxStore,RwLockOperation::Read)
                                     .await
                                     .get(&client_id) {
-                                        Some(SessionMap::Single((_, active_notification))) => {
+                                        Some(SessionMap::Single((_, active_notification, _))) => {
                                             if let Ok(active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
                                                 active_notification.refresh()
                                             }
                                         },
                                         Some(SessionMap::Multi(client)) => {
-                                            for (_, (_, active_notification)) in client.iter() {
+                                            for (_, (_, active_notification, _)) in client.iter() {
                                                 if let Ok(active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
                                                     active_notification.refresh()
                                                 }
@@ -379,25 +453,27 @@ async fn retry_notifications(
                                     let read_and_process_notification_clients_tx_read_start_time =
                                         tokio::time::Instant::now();
 
-                                    let clients_tx =
+                                    let (clients_tx, version) =
                                         match clients_tx_clone
                                             .get(shard.inner() as usize)
                                             .expect("This error is impossible")
                                             .read(RwLockName::ClientTxStore,RwLockOperation::Read)
                                             .await
                                             .get(&client_id) {
-                                                Some(SessionMap::Single((client_tx, _))) => {
-                                                    vec![client_tx.clone()]
+                                                Some(SessionMap::Single((client_tx, _, version))) => {
+                                                    (vec![client_tx.clone()], version.clone())
                                                 },
                                                 Some(SessionMap::Multi(client)) => {
-                                                    client.iter().map(|(_, (client_tx, _))| client_tx.clone()).collect()
+                                                    let client_txs: Vec<_> = client.iter().map(|(_, (client_tx, _, _))| client_tx.clone()).collect();
+                                                    let version = client.values().next().map(|(_, _, version)| version.clone()).unwrap_or_else(|| "v1".to_string());
+                                                    (client_txs, version)
                                                 }
                                                 None => {
                                                     warn!(
                                                         "Client ({:?}) entry does not exist, client got disconnected intermittently.",
                                                         client_id
                                                     );
-                                                    vec![]
+                                                    (vec![], "v1".to_string())
                                                 }
                                             };
 
@@ -408,11 +484,12 @@ async fn retry_notifications(
 
                                     for client_tx in clients_tx {
                                         if let Err(err) = send_notification(
-                                            &client_id,
                                             &client_tx,
                                             notification.to_owned(),
                                             &redis_pool_clone,
+                                            &version,
                                             &shard,
+                                            &client_id,
                                         )
                                         .await
                                         {
@@ -472,26 +549,34 @@ async fn active_notification(
         let client_id = ClientId(stream_id);
         let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
 
-        let all_clients_tx = match clients_tx
+        let (all_clients_tx, version) = match clients_tx
             .get(shard.inner() as usize)
             .expect("This error is impossible")
             .read(RwLockName::ClientTxStore, RwLockOperation::Read)
             .await
             .get(&client_id)
         {
-            Some(SessionMap::Single((client_tx, _))) => {
-                vec![client_tx.clone()]
+            Some(SessionMap::Single((client_tx, _, version))) => {
+                (vec![client_tx.clone()], version.clone())
             }
-            Some(SessionMap::Multi(client)) => client
-                .iter()
-                .map(|(_, (client_tx, _))| client_tx.clone())
-                .collect(),
+            Some(SessionMap::Multi(client)) => {
+                let client_txs: Vec<_> = client
+                    .iter()
+                    .map(|(_, (client_tx, _, _))| client_tx.clone())
+                    .collect();
+                let version = client
+                    .values()
+                    .next()
+                    .map(|(_, _, version)| version.clone())
+                    .unwrap_or_else(|| "v1".to_string());
+                (client_txs, version)
+            }
             None => {
                 warn!(
                     "Client ({:?}) entry does not exist, client got disconnected intermittently.",
                     client_id
                 );
-                vec![]
+                (vec![], "v1".to_string())
             }
         };
 
@@ -508,7 +593,7 @@ async fn active_notification(
                     .await
                     .get_mut(&client_id)
                 {
-                    Some(SessionMap::Single((_, active_notification))) => {
+                    Some(SessionMap::Single((_, active_notification, _))) => {
                         active_notification
                             .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                             .await
@@ -516,7 +601,7 @@ async fn active_notification(
                     }
                     Some(SessionMap::Multi(client)) => {
                         stream::iter(client.iter_mut())
-                            .for_each_concurrent(None, |(_, (_, active_notification))| async {
+                            .for_each_concurrent(None, |(_, (_, active_notification, _))| async {
                                 active_notification
                                     .write(
                                         RwLockName::ActiveNotificationStore,
@@ -545,11 +630,12 @@ async fn active_notification(
                     } else {
                         for client_tx in all_clients_tx.clone() {
                             if let Err(err) = send_notification(
-                                &client_id,
                                 &client_tx,
                                 notification.to_owned(),
                                 redis_pool,
+                                &version,
                                 &shard,
+                                &client_id,
                             )
                             .await
                             {

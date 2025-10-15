@@ -7,15 +7,18 @@
 */
 
 use crate::{
+    NotificationAck, NotificationPayload, RemoveNotificationRequest, RemoveNotificationResponse,
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
+        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid},
     },
     environment::AppState,
     notification_client_connection_duration, notification_latency,
     notification_server::Notification,
     outbound::external::internal_authentication,
-    redis::commands::{get_client_id, get_notification_stream_id, set_client_id},
+    redis::commands::{
+        get_client_id, get_notification_stream_id, remove_notification_by_id, set_client_id,
+    },
     tools::{
         error::AppError,
         prometheus::{
@@ -23,7 +26,6 @@ use crate::{
             NOTIFICATION_LATENCY,
         },
     },
-    NotificationAck, NotificationPayload,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -34,10 +36,10 @@ use shared::redis::types::RedisConnectionPool;
 use std::{env::var, pin::Pin, str::FromStr};
 use tokio::{
     sync::mpsc::{self, UnboundedSender},
-    time::{sleep, timeout, Instant},
+    time::{Instant, sleep, timeout},
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{metadata::MetadataMap, Request, Response, Status};
+use tonic::{Request, Response, Status, metadata::MetadataMap};
 use tracing::*;
 
 #[allow(clippy::type_complexity)]
@@ -112,6 +114,11 @@ impl Notification for NotificationService {
             .and_then(|origin| origin.to_str().ok())
             .map(|origin| SessionID(origin.to_string()));
 
+        let version = metadata
+            .get("version")
+            .and_then(|version| version.to_str().ok())
+            .unwrap_or("v1");
+
         let ClientId(client_id) = if var("DEV").is_ok() {
             ClientId(token.to_owned())
         } else {
@@ -148,7 +155,7 @@ impl Notification for NotificationService {
         let add_client_tx_start_time = Instant::now();
         if let Err(err) = read_notification_tx.clone().send((
             ClientId(client_id.to_owned()),
-            SenderType::ClientConnection((session_id.to_owned(), client_tx)),
+            SenderType::ClientConnection((session_id.to_owned(), client_tx, version.to_string())),
             Utc::now(),
         )) {
             error!(
@@ -203,6 +210,11 @@ impl Notification for NotificationService {
             .and_then(|origin| TokenOrigin::from_str(origin).ok())
             .unwrap_or(TokenOrigin::DriverApp);
 
+        let version = metadata
+            .get("version")
+            .and_then(|version| version.to_str().ok())
+            .unwrap_or("v1");
+
         let ClientId(client_id) = if var("DEV").is_ok() {
             ClientId(token.to_owned())
         } else {
@@ -239,7 +251,7 @@ impl Notification for NotificationService {
         let add_client_tx_start_time = Instant::now();
         if let Err(err) = read_notification_tx.clone().send((
             ClientId(client_id.to_owned()),
-            SenderType::ClientConnection((None, client_tx)),
+            SenderType::ClientConnection((None, client_tx, version.to_string())),
             Utc::now(),
         )) {
             error!(
@@ -347,5 +359,99 @@ impl Notification for NotificationService {
         });
 
         Ok(Response::new(Box::pin(ReceiverStream::new(client_rx))))
+    }
+
+    async fn remove_notification(
+        &self,
+        request: Request<RemoveNotificationRequest>,
+    ) -> Result<Response<RemoveNotificationResponse>, Status> {
+        let metadata: &MetadataMap = request.metadata();
+        let token = metadata
+            .get("token")
+            .and_then(|token| token.to_str().ok())
+            .map(|token| token.to_string())
+            .ok_or(AppError::InvalidRequest(
+                "token (token - Header) not found".to_string(),
+            ))?;
+
+        let token_origin = metadata
+            .get("token-origin")
+            .and_then(|origin| origin.to_str().ok())
+            .and_then(|origin| TokenOrigin::from_str(origin).ok())
+            .unwrap_or(TokenOrigin::DriverApp);
+
+        let ClientId(client_id) = if var("DEV").is_ok() {
+            ClientId(token.to_owned())
+        } else {
+            let internal_auth_cfg = self.app_state.internal_auth_cfg.get(&token_origin).ok_or(
+                AppError::InternalError(format!(
+                    "InternalAuthConfig Not Found for TokenOrigin: {}",
+                    token_origin
+                )),
+            )?;
+            get_client_id_from_bpp_authentication(
+                &self.app_state.redis_pool,
+                &token,
+                &internal_auth_cfg.auth_url,
+                &internal_auth_cfg.auth_api_key,
+                &internal_auth_cfg.auth_token_expiry,
+            )
+            .await
+            .map_err(|err| {
+                AppError::InternalError(format!("Internal Authentication Failed : {:?}", err))
+            })?
+        };
+
+        let notification_id = request.into_inner().notification_id;
+
+        if notification_id.is_empty() {
+            return Ok(Response::new(RemoveNotificationResponse {
+                success: false,
+                message: "Notification ID cannot be empty".to_string(),
+            }));
+        }
+
+        // Calculate shard for the client
+        let shard = Shard((hash_uuid(&client_id) % self.app_state.max_shards as u128) as u64);
+
+        match remove_notification_by_id(
+            &self.app_state.redis_pool,
+            &client_id,
+            &notification_id,
+            &shard,
+        )
+        .await
+        {
+            Ok(true) => {
+                info!(
+                    "Successfully removed notification {} for client {}",
+                    notification_id, client_id
+                );
+                Ok(Response::new(RemoveNotificationResponse {
+                    success: true,
+                    message: "Notification removed successfully".to_string(),
+                }))
+            }
+            Ok(false) => {
+                warn!(
+                    "Notification {} not found for client {}",
+                    notification_id, client_id
+                );
+                Ok(Response::new(RemoveNotificationResponse {
+                    success: false,
+                    message: "Notification not found".to_string(),
+                }))
+            }
+            Err(err) => {
+                error!(
+                    "Failed to remove notification {} for client {}: {:?}",
+                    notification_id, client_id, err
+                );
+                Ok(Response::new(RemoveNotificationResponse {
+                    success: false,
+                    message: format!("Failed to remove notification: {}", err),
+                }))
+            }
+        }
     }
 }

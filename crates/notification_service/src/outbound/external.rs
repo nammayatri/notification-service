@@ -7,7 +7,7 @@
 */
 use super::types::*;
 use crate::tools::{
-    callapi::{call_api, CallApiError},
+    callapi::{CallApiError, call_api},
     error::AppError,
 };
 use actix_http::StatusCode;

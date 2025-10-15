@@ -18,6 +18,26 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
 const notificationProto =
   grpc.loadPackageDefinition(packageDefinition).notification_service;
 
+const removeNotification = (notificationId) => {
+  const metadata = new grpc.Metadata();
+  metadata.add("token-origin", "DriverDashboard");
+  metadata.add("token", "618da5ec-c349-4715-8537-f5ca0bba8a5f");
+
+  const request = { notification_id: notificationId };
+
+  client.RemoveNotification(request, metadata, (error, response) => {
+    if (error) {
+      console.error("Error removing notification:", error);
+    } else {
+      if (response.success) {
+        console.log(`✅ Successfully removed notification: ${notificationId}`);
+      } else {
+        console.log(`❌ Failed to remove notification: ${response.message}`);
+      }
+    }
+  });
+};
+
 const connect = () => {
   // Create a new gRPC client
   client = new notificationProto.Notification(
@@ -36,8 +56,14 @@ const connect = () => {
   stream.on("data", (response) => {
     console.log("Received notification:", response);
 
-    // Send acknowledgment
+    // Send acknowledgment (for tracking purposes)
     stream.write({ id: response.id });
+
+    // After processing the notification, remove it from the persistent queue
+    // This ensures the notification won't be sent again on reconnection
+    setTimeout(() => {
+      removeNotification(response.id);
+    }, 1000); // Remove after 1 second to simulate processing time
   });
 
   stream.on("end", () => {

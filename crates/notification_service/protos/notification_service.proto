@@ -7,6 +7,17 @@ message NotificationAck {
   string id = 1;
 }
 
+// Message for removing notifications
+message RemoveNotificationRequest {
+  string notification_id = 1;
+}
+
+// Response for remove notification request
+message RemoveNotificationResponse {
+  bool success = 1;
+  string message = 2;
+}
+
 // Message for the entity associated with the notification
 message Entity {
   string id = 1;
@@ -24,11 +35,14 @@ message NotificationPayload {
   Entity entity = 6;
 }
 
-// Notification service with a single Bi-directional RPC method
+// Notification service with streaming and management methods
 service Notification {
   // The RPC method for streaming notifications based on acknowledgments
   rpc StreamPayload(stream NotificationAck) returns (stream NotificationPayload);
 
   // The RPC method for server side streaming notifications without acknowledgments
   rpc ServerStreamPayload(NotificationAck) returns (stream NotificationPayload);
+
+  // The RPC method for removing specific notifications from the queue
+  rpc RemoveNotification(RemoveNotificationRequest) returns (RemoveNotificationResponse);
 }

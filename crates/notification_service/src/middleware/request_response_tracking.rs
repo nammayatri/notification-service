@@ -8,13 +8,13 @@
 
 use crate::incoming_api;
 use crate::tools::prometheus::INCOMING_API;
-use hyper::Body;
 use std::{
     pin::Pin,
     task::{Context, Poll},
     time::Instant,
 };
-use tonic::body::BoxBody;
+use tonic::body::Body;
+
 use tower::{Layer, Service};
 
 #[derive(Debug, Clone, Default)]
@@ -35,9 +35,15 @@ pub struct RequestResponseTrackingMiddleware<S> {
 
 type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
-impl<S> Service<hyper::Request<Body>> for RequestResponseTrackingMiddleware<S>
+impl<S> Service<tonic::codegen::http::request::Request<Body>>
+    for RequestResponseTrackingMiddleware<S>
 where
-    S: Service<hyper::Request<Body>, Response = hyper::Response<BoxBody>> + Clone + Send + 'static,
+    S: Service<
+            tonic::codegen::http::request::Request<Body>,
+            Response = tonic::codegen::http::response::Response<Body>,
+        > + Clone
+        + Send
+        + 'static,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -48,7 +54,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: hyper::Request<Body>) -> Self::Future {
+    fn call(&mut self, req: tonic::codegen::http::request::Request<Body>) -> Self::Future {
         let start_time = Instant::now();
 
         let clone = self.inner.clone();

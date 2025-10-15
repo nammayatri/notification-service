@@ -14,9 +14,9 @@ mod tests {
     use chrono::Utc;
     use lazy_static::lazy_static;
     use notification_service::{common::utils::hash_uuid, redis::keys::notification_client_key};
-    use rand::{distributions::Alphanumeric, rngs::StdRng, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, distributions::Alphanumeric, rngs::StdRng};
     use reqwest::Client;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tokio::sync::RwLock;
 
     lazy_static! {
@@ -1193,17 +1193,31 @@ mod tests {
 
         for driver_id in DRIVER_IDS.iter() {
             let data = [
-            ("entity.id", "181a66a5-749c-4c9f-aea5-a5418b981cf0"),
-            ("entity.type", "SearchRequest"),
-            ("entity.data", "{\\\"searchRequestValidTill\\\":\\\"2023-12-23T13:45:38.057846262Z\\\",\\\"searchRequestId\\\":\\\"181a66a5-749c-4c9f-aea5-a5418b981cf0\\\",\\\"startTime\\\":\\\"2022-08-15T13:43:30.713006Z\\\",\\\"baseFare\\\":100.99,\\\"distance\\\":6066,\\\"distanceToPickup\\\":316,\\\"fromLocation\\\":{\\\"area\\\":\\\"B-3, CA-1/99, Ganapathi Temple Rd, KHB Colony, 5th Block, Koramangala, Bengaluru, Karnataka 560095, India\\\",\\\"state\\\":null,\\\"createdAt\\\":\\\"2022-08-15T13:43:37.771311059Z\\\",\\\"country\\\":null,\\\"building\\\":null,\\\"door\\\":null,\\\"street\\\":null,\\\"lat\\\":12.9362698,\\\"city\\\":null,\\\"areaCode\\\":null,\\\"id\\\":\\\"ef9ff2e4-592b-4b00-bb07-e8d9c4965d84\\\",\\\"lon\\\":77.6177708,\\\"updatedAt\\\":\\\"2022-08-15T13:43:37.771311059Z\\\"},\\\"toLocation\\\":{\\\"area\\\":\\\"Level 8, Raheja towers, 23-24, Mahatma Gandhi Rd, Yellappa Chetty Layout, Sivanchetti Gardens, Bengaluru, Karnataka 560001, India\\\",\\\"state\\\":null,\\\"createdAt\\\":\\\"2022-08-15T13:43:37.771378308Z\\\",\\\"country\\\":null,\\\"building\\\":null,\\\"door\\\":null,\\\"street\\\":null,\\\"lat\\\":12.9730611,\\\"city\\\":null,\\\"areaCode\\\":null,\\\"id\\\":\\\"3780b236-715b-4822-b834-96bf0800c8d6\\\",\\\"lon\\\":77.61707299999999,\\\"updatedAt\\\":\\\"2022-08-15T13:43:37.771378308Z\\\"},\\\"durationToPickup\\\":139}"),
-            ("id", &uuid::Uuid::new_v4().to_string()),
-            ("category", "NEW_RIDE_AVAILABLE"),
-            ("title", "New ride available for offering"),
-            ("body", "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters"),
-            ("show", "SHOW"),
-            ("created_at", &Utc::now().format("%Y-%m-%dT%H:%M:%S%.fZ").to_string()),
-            ("ttl", &(Utc::now() + Duration::from_secs(600)).format("%Y-%m-%dT%H:%M:%S%.fZ").to_string())
-        ];
+                ("entity.id", "181a66a5-749c-4c9f-aea5-a5418b981cf0"),
+                ("entity.type", "SearchRequest"),
+                (
+                    "entity.data",
+                    "{\\\"searchRequestValidTill\\\":\\\"2023-12-23T13:45:38.057846262Z\\\",\\\"searchRequestId\\\":\\\"181a66a5-749c-4c9f-aea5-a5418b981cf0\\\",\\\"startTime\\\":\\\"2022-08-15T13:43:30.713006Z\\\",\\\"baseFare\\\":100.99,\\\"distance\\\":6066,\\\"distanceToPickup\\\":316,\\\"fromLocation\\\":{\\\"area\\\":\\\"B-3, CA-1/99, Ganapathi Temple Rd, KHB Colony, 5th Block, Koramangala, Bengaluru, Karnataka 560095, India\\\",\\\"state\\\":null,\\\"createdAt\\\":\\\"2022-08-15T13:43:37.771311059Z\\\",\\\"country\\\":null,\\\"building\\\":null,\\\"door\\\":null,\\\"street\\\":null,\\\"lat\\\":12.9362698,\\\"city\\\":null,\\\"areaCode\\\":null,\\\"id\\\":\\\"ef9ff2e4-592b-4b00-bb07-e8d9c4965d84\\\",\\\"lon\\\":77.6177708,\\\"updatedAt\\\":\\\"2022-08-15T13:43:37.771311059Z\\\"},\\\"toLocation\\\":{\\\"area\\\":\\\"Level 8, Raheja towers, 23-24, Mahatma Gandhi Rd, Yellappa Chetty Layout, Sivanchetti Gardens, Bengaluru, Karnataka 560001, India\\\",\\\"state\\\":null,\\\"createdAt\\\":\\\"2022-08-15T13:43:37.771378308Z\\\",\\\"country\\\":null,\\\"building\\\":null,\\\"door\\\":null,\\\"street\\\":null,\\\"lat\\\":12.9730611,\\\"city\\\":null,\\\"areaCode\\\":null,\\\"id\\\":\\\"3780b236-715b-4822-b834-96bf0800c8d6\\\",\\\"lon\\\":77.61707299999999,\\\"updatedAt\\\":\\\"2022-08-15T13:43:37.771378308Z\\\"},\\\"durationToPickup\\\":139}",
+                ),
+                ("id", &uuid::Uuid::new_v4().to_string()),
+                ("category", "NEW_RIDE_AVAILABLE"),
+                ("title", "New ride available for offering"),
+                (
+                    "body",
+                    "A new ride for 15 Aug, 07:13 PM is available 316 meters away from you. Estimated base fare is 100 INR, estimated distance is 6066 meters",
+                ),
+                ("show", "SHOW"),
+                (
+                    "created_at",
+                    &Utc::now().format("%Y-%m-%dT%H:%M:%S%.fZ").to_string(),
+                ),
+                (
+                    "ttl",
+                    &(Utc::now() + Duration::from_secs(600))
+                        .format("%Y-%m-%dT%H:%M:%S%.fZ")
+                        .to_string(),
+                ),
+            ];
             let shard = hash_uuid(driver_id) % MAX_SHARDS;
             println!(
                 "redis-cli -h ... -c XADD \"{}\" \"*\" {}",

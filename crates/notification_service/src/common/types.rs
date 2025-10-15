@@ -6,9 +6,9 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 use crate::{
+    NotificationPayload,
     redis::{commands::read_client_notification, types::NotificationData},
     tools::prometheus::RWLOCK_DELAY,
-    NotificationPayload,
 };
 
 use chrono::{DateTime, Utc};
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use shared::redis::types::RedisConnectionPool;
 use std::sync::Arc;
 use strum_macros::{Display, EnumIter, EnumString};
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::{RwLock, mpsc::Sender};
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard, TryLockError};
 use tokio::time::Instant;
 use tonic::Status;
@@ -116,7 +116,7 @@ pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
 #[derive(Display)]
 pub enum SenderType {
     #[strum(to_string = "ClientConnection")]
-    ClientConnection((Option<SessionID>, ClientTx)),
+    ClientConnection((Option<SessionID>, ClientTx, String)),
 
     #[strum(to_string = "ClientDisconnection")]
     ClientDisconnection(Option<SessionID>),
@@ -127,8 +127,8 @@ pub enum SenderType {
 
 #[derive(Clone, Debug)]
 pub enum SessionMap {
-    Single((ClientTx, Arc<MonitoredRwLock<ActiveNotification>>)), // A single session with a (ClientTx, Counter)
-    Multi(FxHashMap<SessionID, (ClientTx, Arc<MonitoredRwLock<ActiveNotification>>)>), // Multiple sessions
+    Single((ClientTx, Arc<MonitoredRwLock<ActiveNotification>>, String)), // A single session with a (ClientTx, Counter, Version)
+    Multi(FxHashMap<SessionID, (ClientTx, Arc<MonitoredRwLock<ActiveNotification>>, String)>), // Multiple sessions with version
 }
 
 pub type ReaderMap = FxHashMap<ClientId, SessionMap>;

@@ -6,7 +6,7 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-use crate::{health_server::Health, HealthCheckRequest, HealthCheckResponse};
+use crate::{HealthCheckRequest, HealthCheckResponse, health_server::Health};
 use anyhow::Result;
 use tonic::{Request, Response, Status};
 
