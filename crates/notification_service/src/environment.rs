@@ -27,6 +27,8 @@ pub struct AppConfig {
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub internal_auth_cfg: HashMap<TokenOrigin, InternalAuthConfig>,
+    #[serde(deserialize_with = "deserialize_url")]
+    pub driver_api_base_url: Url,
     pub logger_cfg: LoggerConfig,
     pub redis_cfg: RedisSettings,
     pub retry_delay_millis: u64,
@@ -40,6 +42,7 @@ pub struct AppConfig {
 pub struct AppState {
     pub redis_pool: Arc<RedisConnectionPool>,
     pub internal_auth_cfg: HashMap<TokenOrigin, InternalAuthConfig>,
+    pub driver_api_base_url: Url,
     pub retry_delay_millis: u64,
     pub grpc_port: u16,
     pub http_server_port: u16,
@@ -67,6 +70,7 @@ impl AppState {
         AppState {
             redis_pool,
             internal_auth_cfg: app_config.internal_auth_cfg,
+            driver_api_base_url: app_config.driver_api_base_url,
             retry_delay_millis: app_config.retry_delay_millis,
             grpc_port: app_config.grpc_port,
             http_server_port: app_config.http_server_port,
