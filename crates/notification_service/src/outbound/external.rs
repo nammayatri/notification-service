@@ -45,3 +45,28 @@ pub async fn internal_authentication(
         Err(err) => Err(AppError::InternalError(err.to_string()))?,
     }
 }
+
+pub async fn driver_quote_respond(
+    base_url: &Url,
+    token: &str,
+    headers: Vec<(&str, &str)>,
+    request_body: super::types::DriverRespondReq,
+) -> Result<super::types::ApiSuccess, CallApiError> {
+    let mut url = base_url.clone();
+    url.path_segments_mut()
+        .expect("Invalid base URL")
+        .push("driver")
+        .push("quote")
+        .push("respond");
+
+    let mut all_headers = vec![("content-type", "application/json"), ("token", token)];
+    all_headers.extend(headers);
+
+    call_api::<super::types::ApiSuccess, super::types::DriverRespondReq>(
+        Method::POST,
+        &url,
+        all_headers,
+        Some(request_body),
+    )
+    .await
+}

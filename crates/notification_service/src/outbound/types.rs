@@ -16,3 +16,21 @@ pub struct AuthResponseData {
     #[serde(rename = "driverId")]
     pub client_id: ClientId,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriverRespondReq {
+    pub notification_source: String,
+    pub rendered_at: String,
+    pub responded_at: String,
+    pub search_request_id: String,
+    pub offered_fare: f64,
+    pub response: String,
+    pub slot_number: i32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiSuccess {
+    pub result: String,
+}

@@ -24,6 +24,23 @@ message NotificationPayload {
   Entity entity = 6;
 }
 
+
+message QuoteResponse {
+  string status = 1;
+  string reason = 2;
+}
+
+// Message for the entity associated with the notification
+message QuoteRequest {
+  string notification_source = 1;
+  string rendered_at = 2;
+  string responded_at = 3;
+  string search_request_id = 4;
+  double offered_fare = 5;
+  string response = 6;
+  int32 slot_number = 7;
+}
+
 // Notification service with a single Bi-directional RPC method
 service Notification {
   // The RPC method for streaming notifications based on acknowledgments
@@ -31,4 +48,6 @@ service Notification {
 
   // The RPC method for server side streaming notifications without acknowledgments
   rpc ServerStreamPayload(NotificationAck) returns (stream NotificationPayload);
+
+  rpc QuoteRespond(stream QuoteRequest) returns (stream QuoteResponse);
 }

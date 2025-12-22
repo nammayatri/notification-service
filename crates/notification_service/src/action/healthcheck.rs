@@ -18,7 +18,7 @@ impl Health for Healthcheck {
         &self,
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
-        let response = HealthCheckResponse { status: 12 };
+        let response: HealthCheckResponse = HealthCheckResponse { status: 12 };
         Ok(Response::new(response))
     }
 }
