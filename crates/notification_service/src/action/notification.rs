@@ -455,7 +455,13 @@ impl Notification for NotificationService {
                                 rendered_at: request_data.rendered_at,
                                 responded_at: request_data.responded_at,
                                 search_request_id: request_data.search_request_id,
-                                offered_fare: request_data.offered_fare,
+                                offered_fare: if request_data.offered_fare == 0.0
+                                    || request_data.response == "Reject"
+                                {
+                                    None
+                                } else {
+                                    Some(request_data.offered_fare)
+                                },
                                 response: request_data.response,
                                 slot_number: request_data.slot_number,
                             };
