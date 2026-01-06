@@ -24,7 +24,7 @@ pub struct DriverRespondReq {
     pub rendered_at: String,
     pub responded_at: String,
     pub search_request_id: String,
-    pub offered_fare: f64,
+    pub offered_fare: Option<f64>,
     pub response: String,
     pub slot_number: i32,
 }
