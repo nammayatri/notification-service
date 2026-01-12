@@ -9,7 +9,11 @@
 use crate::{
     common::{
         types::*,
-        utils::{abs_diff_utc_as_sec, get_timestamp_from_stream_id},
+        utils::{
+            abs_diff_utc_as_sec, get_timestamp_from_stream_id,
+            log_quote_respond_api_error_with_status, log_quote_respond_api_result,
+            log_quote_respond_api_success,
+        },
     },
     environment::AppState,
     notification_client_connection_duration, notification_latency,
@@ -27,7 +31,7 @@ use crate::{
             NOTIFICATION_LATENCY,
         },
     },
-    NotificationAck, NotificationPayload, QuoteRequest, QuoteResponse,
+    NotificationAck, NotificationPayload, QuoteRequest, QuoteResponse, QuoteResponseWithId,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -44,6 +48,16 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{metadata::MetadataMap, Request, Response, Status};
 use tracing::*;
 
+/// Type alias for optional header values extracted from metadata
+type OptionalHeaders = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 #[allow(clippy::type_complexity)]
 pub struct NotificationService {
     read_notification_tx: UnboundedSender<(ClientId, SenderType, DateTime<Utc>)>,
@@ -59,6 +73,199 @@ impl NotificationService {
         NotificationService {
             read_notification_tx,
             app_state,
+        }
+    }
+
+    /// Extract and authenticate token from metadata, returning client_id
+    async fn extract_and_authenticate(
+        &self,
+        metadata: &MetadataMap,
+    ) -> Result<(String, ClientId), Status> {
+        let token = metadata
+            .get("token")
+            .and_then(|token| token.to_str().ok())
+            .map(|token| token.to_string())
+            .ok_or(AppError::InvalidRequest(
+                "token (token - Header) not found".to_string(),
+            ))
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let token_origin = metadata
+            .get("token-origin")
+            .and_then(|origin| origin.to_str().ok())
+            .and_then(|origin| TokenOrigin::from_str(origin).ok())
+            .unwrap_or(TokenOrigin::DriverApp);
+
+        let ClientId(client_id) = if var("DEV").is_ok() {
+            ClientId(token.to_owned())
+        } else {
+            let internal_auth_cfg = self
+                .app_state
+                .internal_auth_cfg
+                .get(&token_origin)
+                .ok_or(AppError::InternalError(format!(
+                    "InternalAuthConfig Not Found for TokenOrigin: {}",
+                    token_origin
+                )))
+                .map_err(|e| Status::internal(e.to_string()))?;
+            get_client_id_from_bpp_authentication(
+                &self.app_state.redis_pool,
+                &token,
+                &internal_auth_cfg.auth_url,
+                &internal_auth_cfg.auth_api_key,
+                &internal_auth_cfg.auth_token_expiry,
+            )
+            .await
+            .map_err(|err| {
+                Status::internal(format!("Internal Authentication Failed : {:?}", err))
+            })?
+        };
+
+        info!("Connection Successful - ClientId : {client_id} - token : {token}");
+        Ok((token, ClientId(client_id)))
+    }
+
+    /// Extract optional headers from metadata
+    fn extract_optional_headers(metadata: &MetadataMap) -> OptionalHeaders {
+        let x_package = metadata
+            .get("x-package")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let x_bundle_version = metadata
+            .get("x-bundle-version")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let x_client_version = metadata
+            .get("x-client-version")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let x_config_version = metadata
+            .get("x-config-version")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let x_react_bundle_version = metadata
+            .get("x-react-bundle-version")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let x_device = metadata
+            .get("x-device")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        (
+            x_package,
+            x_bundle_version,
+            x_client_version,
+            x_config_version,
+            x_react_bundle_version,
+            x_device,
+        )
+    }
+
+    /// Build API headers vector from optional header values
+    /// Returns a vector of owned (String, String) tuples for use in spawned tasks
+    fn build_api_headers(
+        x_package: &Option<String>,
+        x_bundle_version: &Option<String>,
+        x_client_version: &Option<String>,
+        x_config_version: &Option<String>,
+        x_react_bundle_version: &Option<String>,
+        x_device: &Option<String>,
+    ) -> Vec<(String, String)> {
+        let mut api_headers = Vec::new();
+        if let Some(pkg) = x_package {
+            api_headers.push(("x-package".to_string(), pkg.clone()));
+        }
+        if let Some(bundle_ver) = x_bundle_version {
+            api_headers.push(("x-bundle-version".to_string(), bundle_ver.clone()));
+        }
+        if let Some(client_ver) = x_client_version {
+            api_headers.push(("x-client-version".to_string(), client_ver.clone()));
+        }
+        if let Some(config_ver) = x_config_version {
+            api_headers.push(("x-config-version".to_string(), config_ver.clone()));
+        }
+        if let Some(react_bundle_ver) = x_react_bundle_version {
+            api_headers.push((
+                "x-react-bundle-version".to_string(),
+                react_bundle_ver.clone(),
+            ));
+        }
+        if let Some(device) = x_device {
+            api_headers.push(("x-device".to_string(), device.clone()));
+        }
+        api_headers
+    }
+
+    /// Convert QuoteRequest to DriverRespondReq
+    fn convert_to_driver_req(request_data: &QuoteRequest) -> DriverRespondReq {
+        DriverRespondReq {
+            notification_source: request_data.notification_source.clone(),
+            rendered_at: request_data.rendered_at.clone(),
+            responded_at: request_data.responded_at.clone(),
+            search_request_id: request_data.search_request_id.clone(),
+            offered_fare: if request_data.offered_fare == 0.0 || request_data.response == "Reject" {
+                None
+            } else {
+                Some(request_data.offered_fare)
+            },
+            response: request_data.response.clone(),
+            slot_number: request_data.slot_number,
+        }
+    }
+
+    /// Call the external API and return the result with status and reason
+    /// Returns (status, reason) tuple for both success and error cases
+    async fn call_driver_quote_respond_api(
+        &self,
+        token: &str,
+        api_headers: Vec<(String, String)>,
+        driver_req: DriverRespondReq,
+        client_id: &str,
+    ) -> (String, String) {
+        Self::call_driver_quote_respond_api_internal(
+            &self.app_state.driver_api_base_url,
+            token,
+            api_headers,
+            driver_req,
+            client_id,
+        )
+        .await
+    }
+
+    /// Internal static version for use in spawned tasks
+    async fn call_driver_quote_respond_api_internal(
+        driver_api_base_url: &Url,
+        token: &str,
+        api_headers: Vec<(String, String)>,
+        driver_req: DriverRespondReq,
+        client_id: &str,
+    ) -> (String, String) {
+        // Convert owned strings to string slices for the API call
+        let api_headers_slices: Vec<(&str, &str)> = api_headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        match driver_quote_respond(driver_api_base_url, token, api_headers_slices, driver_req).await
+        {
+            Ok(api_success) => {
+                log_quote_respond_api_success(client_id);
+                (api_success.result, "Success".to_string())
+            }
+            Err(CallApiError::ExternalAPICallError(error_resp)) => {
+                let status = error_resp.status();
+                log_quote_respond_api_error_with_status(client_id, status.as_u16());
+                let reason = error_resp.text().await.unwrap_or_default();
+                ("error".to_string(), reason)
+            }
+            Err(err) => {
+                log_quote_respond_api_result(client_id, &err);
+                let reason = match &err {
+                    CallApiError::ConnectionError(e) => format!("Connection error: {}", e),
+                    _ => format!("Internal error: {:?}", err),
+                };
+                ("error".to_string(), reason)
+            }
         }
     }
 }
@@ -91,6 +298,9 @@ impl Notification for NotificationService {
 
     type QuoteRespondStream =
         Pin<Box<dyn Stream<Item = Result<QuoteResponse, Status>> + Send + Sync>>;
+
+    type QuoteRespondStreamWithIdStream =
+        Pin<Box<dyn Stream<Item = Result<QuoteResponseWithId, Status>> + Send + Sync>>;
 
     #[allow(unused_variables)]
     async fn server_stream_payload(
@@ -362,71 +572,18 @@ impl Notification for NotificationService {
     ) -> Result<Response<Self::QuoteRespondStream>, Status> {
         let metadata: &MetadataMap = request.metadata();
 
-        // Extract and validate token from metadata
-        let token = metadata
-            .get("token")
-            .and_then(|token| token.to_str().ok())
-            .map(|token| token.to_string())
-            .ok_or(AppError::InvalidRequest(
-                "token (token - Header) not found".to_string(),
-            ))?;
+        // Extract and authenticate
+        let (token, ClientId(client_id)) = self.extract_and_authenticate(metadata).await?;
 
-        let token_origin = metadata
-            .get("token-origin")
-            .and_then(|origin| origin.to_str().ok())
-            .and_then(|origin| TokenOrigin::from_str(origin).ok())
-            .unwrap_or(TokenOrigin::DriverApp);
-
-        // Validate token and get client_id
-        let ClientId(client_id) = if var("DEV").is_ok() {
-            ClientId(token.to_owned())
-        } else {
-            let internal_auth_cfg = self.app_state.internal_auth_cfg.get(&token_origin).ok_or(
-                AppError::InternalError(format!(
-                    "InternalAuthConfig Not Found for TokenOrigin: {}",
-                    token_origin
-                )),
-            )?;
-            get_client_id_from_bpp_authentication(
-                &self.app_state.redis_pool,
-                &token,
-                &internal_auth_cfg.auth_url,
-                &internal_auth_cfg.auth_api_key,
-                &internal_auth_cfg.auth_token_expiry,
-            )
-            .await
-            .map_err(|err| {
-                AppError::InternalError(format!("Internal Authentication Failed : {:?}", err))
-            })?
-        };
-
-        info!("Connection Successful - ClientId : {client_id} - token : {token}");
-
-        // Extract optional headers from metadata
-        let x_package = metadata
-            .get("x-package")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let x_bundle_version = metadata
-            .get("x-bundle-version")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let x_client_version = metadata
-            .get("x-client-version")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let x_config_version = metadata
-            .get("x-config-version")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let x_react_bundle_version = metadata
-            .get("x-react-bundle-version")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let x_device = metadata
-            .get("x-device")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+        // Extract optional headers
+        let (
+            x_package,
+            x_bundle_version,
+            x_client_version,
+            x_config_version,
+            x_react_bundle_version,
+            x_device,
+        ) = Self::extract_optional_headers(metadata);
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let request_timeout_seconds = self.app_state.request_timeout_seconds;
@@ -449,127 +606,34 @@ impl Notification for NotificationService {
                 loop {
                     match stream.message().await {
                         Ok(Some(request_data)) => {
-                            // Convert proto QuoteRequest to DriverRespondReq
-                            let driver_req = DriverRespondReq {
-                                notification_source: request_data.notification_source,
-                                rendered_at: request_data.rendered_at,
-                                responded_at: request_data.responded_at,
-                                search_request_id: request_data.search_request_id,
-                                offered_fare: if request_data.offered_fare == 0.0
-                                    || request_data.response == "Reject"
-                                {
-                                    None
-                                } else {
-                                    Some(request_data.offered_fare)
-                                },
-                                response: request_data.response,
-                                slot_number: request_data.slot_number,
-                            };
+                            // Build API headers
+                            let api_headers = Self::build_api_headers(
+                                &x_package_clone,
+                                &x_bundle_version_clone,
+                                &x_client_version_clone,
+                                &x_config_version_clone,
+                                &x_react_bundle_version_clone,
+                                &x_device_clone,
+                            );
 
-                            // Build headers vector
-                            let mut api_headers = Vec::new();
-                            if let Some(pkg) = &x_package_clone {
-                                api_headers.push(("x-package", pkg.as_str()));
-                            }
-                            if let Some(bundle_ver) = &x_bundle_version_clone {
-                                api_headers.push(("x-bundle-version", bundle_ver.as_str()));
-                            }
-                            if let Some(client_ver) = &x_client_version_clone {
-                                api_headers.push(("x-client-version", client_ver.as_str()));
-                            }
-                            if let Some(config_ver) = &x_config_version_clone {
-                                api_headers.push(("x-config-version", config_ver.as_str()));
-                            }
-                            if let Some(react_bundle_ver) = &x_react_bundle_version_clone {
-                                api_headers
-                                    .push(("x-react-bundle-version", react_bundle_ver.as_str()));
-                            }
-                            if let Some(device) = &x_device_clone {
-                                api_headers.push(("x-device", device.as_str()));
-                            }
+                            // Convert to DriverRespondReq
+                            let driver_req = Self::convert_to_driver_req(&request_data);
 
-                            // Call the internal API
-                            match driver_quote_respond(
+                            // Call the external API
+                            let (status, reason) = Self::call_driver_quote_respond_api_internal(
                                 &driver_api_base_url,
                                 &token_clone,
                                 api_headers,
                                 driver_req,
+                                &client_id_clone,
                             )
-                            .await
-                            {
-                                Ok(api_success) => {
-                                    info!(
-                                        "Successfully processed quote respond for client {}",
-                                        client_id_clone
-                                    );
-                                    let response = QuoteResponse {
-                                        status: api_success.result,
-                                        reason: "Success".to_string(),
-                                    };
+                            .await;
 
-                                    if tx.send(Ok(response)).await.is_err() {
-                                        error!(
-                                            "Failed to send response to client: {}",
-                                            client_id_clone
-                                        );
-                                        break;
-                                    }
-                                }
-                                Err(CallApiError::ExternalAPICallError(error_resp)) => {
-                                    error!(
-                                        "Driver API call failed for client {}: Status {}",
-                                        client_id_clone,
-                                        error_resp.status()
-                                    );
-                                    let response = QuoteResponse {
-                                        status: "error".to_string(),
-                                        reason: error_resp.text().await.unwrap_or_default(),
-                                    };
+                            let response = QuoteResponse { status, reason };
 
-                                    if tx.send(Ok(response)).await.is_err() {
-                                        error!(
-                                            "Failed to send error response to client: {}",
-                                            client_id_clone
-                                        );
-                                        break;
-                                    }
-                                }
-                                Err(CallApiError::ConnectionError(err)) => {
-                                    error!(
-                                        "Connection error for client {}: {}",
-                                        client_id_clone, err
-                                    );
-                                    let response = QuoteResponse {
-                                        status: "error".to_string(),
-                                        reason: format!("Connection error: {}", err),
-                                    };
-
-                                    if tx.send(Ok(response)).await.is_err() {
-                                        error!(
-                                            "Failed to send error response to client: {}",
-                                            client_id_clone
-                                        );
-                                        break;
-                                    }
-                                }
-                                Err(err) => {
-                                    error!(
-                                        "Error calling driver API for client {}: {:?}",
-                                        client_id_clone, err
-                                    );
-                                    let response = QuoteResponse {
-                                        status: "error".to_string(),
-                                        reason: format!("Internal error: {:?}", err),
-                                    };
-
-                                    if tx.send(Ok(response)).await.is_err() {
-                                        error!(
-                                            "Failed to send error response to client: {}",
-                                            client_id_clone
-                                        );
-                                        break;
-                                    }
-                                }
+                            if tx.send(Ok(response)).await.is_err() {
+                                error!("Failed to send response to client: {}", client_id_clone);
+                                break;
                             }
                         }
                         Ok(None) => {
@@ -592,5 +656,152 @@ impl Notification for NotificationService {
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
         )))
+    }
+
+    async fn quote_respond_stream_with_id(
+        &self,
+        request: Request<tonic::Streaming<QuoteRequest>>,
+    ) -> Result<Response<Self::QuoteRespondStreamWithIdStream>, Status> {
+        let metadata: &MetadataMap = request.metadata();
+
+        // Extract and authenticate
+        let (token, ClientId(client_id)) = self.extract_and_authenticate(metadata).await?;
+
+        // Extract optional headers
+        let (
+            x_package,
+            x_bundle_version,
+            x_client_version,
+            x_config_version,
+            x_react_bundle_version,
+            x_device,
+        ) = Self::extract_optional_headers(metadata);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let request_timeout_seconds = self.app_state.request_timeout_seconds;
+        let driver_api_base_url = self.app_state.driver_api_base_url.clone();
+        let token_clone = token.clone();
+        let client_id_for_timeout = client_id.clone();
+        let x_package_clone = x_package.clone();
+        let x_bundle_version_clone = x_bundle_version.clone();
+        let x_client_version_clone = x_client_version.clone();
+        let x_config_version_clone = x_config_version.clone();
+        let x_react_bundle_version_clone = x_react_bundle_version.clone();
+        let x_device_clone = x_device.clone();
+
+        // Spawn a task to handle incoming requests
+        tokio::spawn(async move {
+            let mut stream = request.into_inner();
+            let client_id_clone = client_id.clone();
+
+            if let Err(err) = timeout(request_timeout_seconds, async move {
+                loop {
+                    match stream.message().await {
+                        Ok(Some(request_data)) => {
+                            let search_request_id = request_data.search_request_id.clone();
+
+                            // Build API headers
+                            let api_headers = Self::build_api_headers(
+                                &x_package_clone,
+                                &x_bundle_version_clone,
+                                &x_client_version_clone,
+                                &x_config_version_clone,
+                                &x_react_bundle_version_clone,
+                                &x_device_clone,
+                            );
+
+                            // Convert to DriverRespondReq
+                            let driver_req = Self::convert_to_driver_req(&request_data);
+
+                            // Call the external API
+                            let (status, reason) = Self::call_driver_quote_respond_api_internal(
+                                &driver_api_base_url,
+                                &token_clone,
+                                api_headers,
+                                driver_req,
+                                &client_id_clone,
+                            )
+                            .await;
+
+                            let response = QuoteResponseWithId {
+                                status,
+                                reason,
+                                search_request_id,
+                            };
+
+                            if tx.send(Ok(response)).await.is_err() {
+                                error!("Failed to send response to client: {}", client_id_clone);
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            info!("Client ({}) Disconnected", client_id_clone);
+                            break;
+                        }
+                        Err(err) => {
+                            info!("Client ({}) Disconnected : {}", client_id_clone, err);
+                            break;
+                        }
+                    }
+                }
+            })
+            .await
+            {
+                info!("Client ({}) Timed Out : {}", client_id_for_timeout, err);
+            }
+        });
+
+        Ok(Response::new(Box::pin(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        )))
+    }
+
+    async fn quote_respond_with_id(
+        &self,
+        request: Request<QuoteRequest>,
+    ) -> Result<Response<QuoteResponseWithId>, Status> {
+        let metadata: &MetadataMap = request.metadata();
+
+        // Extract and authenticate
+        let (token, ClientId(client_id)) = self.extract_and_authenticate(metadata).await?;
+
+        // Extract optional headers
+        let (
+            x_package,
+            x_bundle_version,
+            x_client_version,
+            x_config_version,
+            x_react_bundle_version,
+            x_device,
+        ) = Self::extract_optional_headers(metadata);
+
+        let request_data = request.into_inner();
+        let search_request_id = request_data.search_request_id.clone();
+
+        // Build API headers
+        let api_headers = Self::build_api_headers(
+            &x_package,
+            &x_bundle_version,
+            &x_client_version,
+            &x_config_version,
+            &x_react_bundle_version,
+            &x_device,
+        );
+
+        // Convert to DriverRespondReq
+        let driver_req = Self::convert_to_driver_req(&request_data);
+
+        // Call the external API
+        let (status, reason) = self
+            .call_driver_quote_respond_api(&token, api_headers, driver_req, &client_id)
+            .await;
+
+        let response = QuoteResponseWithId {
+            status,
+            reason,
+            search_request_id,
+        };
+
+        Ok(Response::new(response))
     }
 }

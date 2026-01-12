@@ -147,3 +147,34 @@ pub fn hash_uuid(uuid_str: &str) -> u128 {
 pub fn get_bucket_from_timestamp(bucket_expiry_in_seconds: &u64, ts: u64) -> u64 {
     ts / bucket_expiry_in_seconds
 }
+
+/// Helper function to log API call results for quote respond operations
+pub fn log_quote_respond_api_result(client_id: &str, result: &crate::tools::callapi::CallApiError) {
+    match result {
+        crate::tools::callapi::CallApiError::ConnectionError(err) => {
+            error!("Connection error for client {}: {}", client_id, err);
+        }
+        _ => {
+            error!(
+                "Error calling driver API for client {}: {:?}",
+                client_id, result
+            );
+        }
+    }
+}
+
+/// Helper function to log external API call errors with status code
+pub fn log_quote_respond_api_error_with_status(client_id: &str, status: u16) {
+    error!(
+        "Driver API call failed for client {}: Status {}",
+        client_id, status
+    );
+}
+
+/// Helper function to log successful API call results for quote respond operations
+pub fn log_quote_respond_api_success(client_id: &str) {
+    info!(
+        "Successfully processed quote respond for client {}",
+        client_id
+    );
+}
