@@ -25,6 +25,12 @@ message NotificationPayload {
 }
 
 
+message QuoteResponseWithId {
+  string status = 1;
+  string reason = 2;
+  string search_request_id = 3;
+}
+
 message QuoteResponse {
   string status = 1;
   string reason = 2;
@@ -50,4 +56,8 @@ service Notification {
   rpc ServerStreamPayload(NotificationAck) returns (stream NotificationPayload);
 
   rpc QuoteRespond(stream QuoteRequest) returns (stream QuoteResponse);
+
+  rpc QuoteRespondStreamWithId(stream QuoteRequest) returns (stream QuoteResponseWithId);
+
+  rpc QuoteRespondWithId(QuoteRequest) returns (QuoteResponseWithId);
 }
