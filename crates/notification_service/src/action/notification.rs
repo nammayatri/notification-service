@@ -585,7 +585,7 @@ impl Notification for NotificationService {
             x_device,
         ) = Self::extract_optional_headers(metadata);
 
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.app_state.channel_buffer);
         let request_timeout_seconds = self.app_state.request_timeout_seconds;
         let driver_api_base_url = self.app_state.driver_api_base_url.clone();
         let token_clone = token.clone();
@@ -677,7 +677,7 @@ impl Notification for NotificationService {
             x_device,
         ) = Self::extract_optional_headers(metadata);
 
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.app_state.channel_buffer);
         let request_timeout_seconds = self.app_state.request_timeout_seconds;
         let driver_api_base_url = self.app_state.driver_api_base_url.clone();
         let token_clone = token.clone();
@@ -700,39 +700,57 @@ impl Notification for NotificationService {
                         Ok(Some(request_data)) => {
                             let search_request_id = request_data.search_request_id.clone();
 
-                            // Build API headers
-                            let api_headers = Self::build_api_headers(
-                                &x_package_clone,
-                                &x_bundle_version_clone,
-                                &x_client_version_clone,
-                                &x_config_version_clone,
-                                &x_react_bundle_version_clone,
-                                &x_device_clone,
-                            );
+                            // Clone values needed for the spawned task
+                            let driver_api_base_url_clone = driver_api_base_url.clone();
+                            let token_clone_for_task = token_clone.clone();
+                            let client_id_for_task = client_id_clone.clone();
+                            let x_package_task = x_package_clone.clone();
+                            let x_bundle_version_task = x_bundle_version_clone.clone();
+                            let x_client_version_task = x_client_version_clone.clone();
+                            let x_config_version_task = x_config_version_clone.clone();
+                            let x_react_bundle_version_task = x_react_bundle_version_clone.clone();
+                            let x_device_task = x_device_clone.clone();
+                            let tx_clone = tx.clone();
 
-                            // Convert to DriverRespondReq
-                            let driver_req = Self::convert_to_driver_req(&request_data);
+                            // Spawn a separate task to process this API call in parallel
+                            tokio::spawn(async move {
+                                // Build API headers
+                                let api_headers = Self::build_api_headers(
+                                    &x_package_task,
+                                    &x_bundle_version_task,
+                                    &x_client_version_task,
+                                    &x_config_version_task,
+                                    &x_react_bundle_version_task,
+                                    &x_device_task,
+                                );
 
-                            // Call the external API
-                            let (status, reason) = Self::call_driver_quote_respond_api_internal(
-                                &driver_api_base_url,
-                                &token_clone,
-                                api_headers,
-                                driver_req,
-                                &client_id_clone,
-                            )
-                            .await;
+                                // Convert to DriverRespondReq
+                                let driver_req = Self::convert_to_driver_req(&request_data);
 
-                            let response = QuoteResponseWithId {
-                                status,
-                                reason,
-                                search_request_id,
-                            };
+                                // Call the external API
+                                let (status, reason) =
+                                    Self::call_driver_quote_respond_api_internal(
+                                        &driver_api_base_url_clone,
+                                        &token_clone_for_task,
+                                        api_headers,
+                                        driver_req,
+                                        &client_id_for_task,
+                                    )
+                                    .await;
 
-                            if tx.send(Ok(response)).await.is_err() {
-                                error!("Failed to send response to client: {}", client_id_clone);
-                                break;
-                            }
+                                let response = QuoteResponseWithId {
+                                    status,
+                                    reason,
+                                    search_request_id,
+                                };
+
+                                if tx_clone.send(Ok(response)).await.is_err() {
+                                    error!(
+                                        "Failed to send response to client: {}",
+                                        client_id_for_task
+                                    );
+                                }
+                            });
                         }
                         Ok(None) => {
                             info!("Client ({}) Disconnected", client_id_clone);
@@ -795,7 +813,6 @@ impl Notification for NotificationService {
         let (status, reason) = self
             .call_driver_quote_respond_api(&token, api_headers, driver_req, &client_id)
             .await;
-
         let response = QuoteResponseWithId {
             status,
             reason,
