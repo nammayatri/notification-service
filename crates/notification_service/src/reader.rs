@@ -161,6 +161,7 @@ async fn client_reciever(
     client_req: SenderType,
     clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     max_shards: u64,
+    read_all_connected_client_notifications: bool,
 ) {
     let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
     match client_req {
@@ -169,9 +170,16 @@ async fn client_reciever(
             CONNECTED_CLIENTS.inc();
 
             let client_reciever_clients_tx_write_start_time = tokio::time::Instant::now();
-            let active_notification = Arc::new(MonitoredRwLock::new(
-                ActiveNotification::new(&redis_pool, &client_id, &shard).await,
-            ));
+
+            // Skip Redis I/O when read_all_connected_client_notifications is true
+            // because retry loop already reads all notifications for all clients
+            let active_notification = if read_all_connected_client_notifications {
+                Arc::new(MonitoredRwLock::new(ActiveNotification::default()))
+            } else {
+                Arc::new(MonitoredRwLock::new(
+                    ActiveNotification::new(&redis_pool, &client_id, &shard).await,
+                ))
+            };
 
             if let Some(session_id) = session_id {
                 let mut client = clients_tx
@@ -258,6 +266,7 @@ async fn client_reciever_looper(
     mut read_notification_rx: UnboundedReceiver<(ClientId, SenderType, DateTime<Utc>)>,
     clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     max_shards: u64,
+    read_all_connected_client_notifications: bool,
 ) {
     while let Some((client_id, client_tx, sent_at)) = read_notification_rx.recv().await {
         channel_delay!(sent_at, &client_tx.to_string());
@@ -268,6 +277,7 @@ async fn client_reciever_looper(
             client_tx,
             clients_tx.clone(),
             max_shards,
+            read_all_connected_client_notifications,
         )
         .await;
     }
@@ -608,6 +618,7 @@ pub async fn run_notification_reader(
         read_notification_rx,
         clients_tx.clone(),
         max_shards,
+        read_all_connected_client_notifications,
     ));
 
     let retry_notifications_task = tokio::spawn(retry_notifications_looper(

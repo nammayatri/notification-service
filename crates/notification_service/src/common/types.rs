@@ -54,11 +54,13 @@ pub struct Ttl(pub DateTime<Utc>);
 #[macros::impl_getter]
 pub struct StreamEntry(pub String);
 
-#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Default)]
 #[macros::impl_getter]
 pub struct ActiveNotification(pub FxHashMap<NotificationId, Ttl>);
 
 impl ActiveNotification {
+    /// Creates a new ActiveNotification by fetching pending notifications from Redis.
+    /// Use `default()` instead when read_all_connected_client_notifications is true.
     pub async fn new(
         redis_pool: &RedisConnectionPool,
         client_id: &ClientId,
