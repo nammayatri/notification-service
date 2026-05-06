@@ -11,8 +11,8 @@ extern crate shared;
 
 use actix_web_prom::PrometheusMetrics;
 use prometheus::{
-    histogram_opts, opts, register_histogram_vec, register_int_counter, register_int_gauge,
-    HistogramVec, IntCounter, IntGauge,
+    histogram_opts, opts, register_histogram_vec, register_int_counter_vec, register_int_gauge,
+    HistogramVec, IntCounterVec, IntGauge,
 };
 pub use shared::tools::prometheus::*;
 
@@ -63,28 +63,40 @@ pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync:
         .expect("Failed to register connected clients metrics")
 });
 
-pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
+pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
-        register_int_counter!("total_notifications", "Total Notifications")
+        register_int_counter_vec!("total_notifications", "Total Notifications", &["category"])
             .expect("Failed to register total notifications metrics")
     });
 
-pub static DELIVERED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
+pub static DELIVERED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
-        register_int_counter!("delivered_notifications", "Delivered Notifications")
-            .expect("Failed to register delivered notifications metrics")
+        register_int_counter_vec!(
+            "delivered_notifications",
+            "Delivered Notifications",
+            &["category"]
+        )
+        .expect("Failed to register delivered notifications metrics")
     });
 
-pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
+pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
-        register_int_counter!("retried_notifications", "Retried Notifications")
-            .expect("Failed to register retried notifications metrics")
+        register_int_counter_vec!(
+            "retried_notifications",
+            "Retried Notifications",
+            &["category"]
+        )
+        .expect("Failed to register retried notifications metrics")
     });
 
-pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounter> =
+pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
-        register_int_counter!("expired_notifications", "Expired Notifications")
-            .expect("Failed to register expired notifications metrics")
+        register_int_counter_vec!(
+            "expired_notifications",
+            "Expired Notifications",
+            &["category"]
+        )
+        .expect("Failed to register expired notifications metrics")
     });
 
 pub static RWLOCK_DELAY: once_cell::sync::Lazy<HistogramVec> = once_cell::sync::Lazy::new(|| {
