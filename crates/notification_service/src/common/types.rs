@@ -54,9 +54,23 @@ pub struct Ttl(pub DateTime<Utc>);
 #[macros::impl_getter]
 pub struct StreamEntry(pub String);
 
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+pub struct NotificationMeta {
+    pub ttl: Ttl,
+    pub category: String,
+    pub retry_counted: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum NotificationObservation {
+    FirstSighting,
+    FirstRetry,
+    AlreadyCounted,
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Default)]
 #[macros::impl_getter]
-pub struct ActiveNotification(pub FxHashMap<NotificationId, Ttl>);
+pub struct ActiveNotification(pub FxHashMap<NotificationId, NotificationMeta>);
 
 impl ActiveNotification {
     /// Creates a new ActiveNotification by fetching pending notifications from Redis.
@@ -69,7 +83,14 @@ impl ActiveNotification {
         let mut counter = FxHashMap::default();
         if let Ok(notifications) = read_client_notification(redis_pool, client_id, shard).await {
             for notification in notifications {
-                counter.insert(notification.id, notification.ttl);
+                counter.insert(
+                    notification.id,
+                    NotificationMeta {
+                        ttl: notification.ttl,
+                        category: notification.category,
+                        retry_counted: false,
+                    },
+                );
             }
         }
         Self(counter)
@@ -78,7 +99,14 @@ impl ActiveNotification {
     pub fn update(&self, notifications: Vec<NotificationData>) -> Self {
         let mut counter = FxHashMap::default();
         for notification in notifications {
-            counter.insert(notification.id, notification.ttl);
+            counter.insert(
+                notification.id,
+                NotificationMeta {
+                    ttl: notification.ttl,
+                    category: notification.category,
+                    retry_counted: false,
+                },
+            );
         }
         Self(counter)
     }
@@ -87,8 +115,38 @@ impl ActiveNotification {
         self.inner().len()
     }
 
-    pub fn acknowledge(&self, notification_id: &NotificationId) {
-        self.inner().remove(notification_id);
+    pub fn acknowledge(&self, notification_id: &NotificationId) -> Option<String> {
+        self.inner()
+            .remove(notification_id)
+            .map(|meta| meta.category)
+    }
+
+    /// Classifies a notification observed by the retry loop and updates the
+    /// map so each id is counted at most once for `total` and once for `retry`.
+    /// Returns the metric bucket the caller should increment (if any).
+    pub fn observe_for_retry_metric(
+        &self,
+        notification: &NotificationData,
+    ) -> NotificationObservation {
+        let mut inner = self.inner();
+        match inner.get_mut(&notification.id) {
+            None => {
+                inner.insert(
+                    notification.id.clone(),
+                    NotificationMeta {
+                        ttl: notification.ttl.clone(),
+                        category: notification.category.clone(),
+                        retry_counted: false,
+                    },
+                );
+                NotificationObservation::FirstSighting
+            }
+            Some(meta) if !meta.retry_counted => {
+                meta.retry_counted = true;
+                NotificationObservation::FirstRetry
+            }
+            Some(_) => NotificationObservation::AlreadyCounted,
+        }
     }
 
     pub fn refresh(&self) {
@@ -97,7 +155,7 @@ impl ActiveNotification {
         let expired_notifications: Vec<NotificationId> = self
             .inner()
             .iter()
-            .filter(|(_, ttl)| (**ttl).inner() < now)
+            .filter(|(_, meta)| meta.ttl.inner() < now)
             .map(|(id, _)| id.to_owned())
             .collect();
 

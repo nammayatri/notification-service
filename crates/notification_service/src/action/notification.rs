@@ -27,8 +27,7 @@ use crate::{
         callapi::CallApiError,
         error::AppError,
         prometheus::{
-            DELIVERED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_CLIENT_CONNECTION_DURATION,
-            NOTIFICATION_LATENCY,
+            MEASURE_DURATION, NOTIFICATION_CLIENT_CONNECTION_DURATION, NOTIFICATION_LATENCY,
         },
     },
     NotificationAck, NotificationPayload, QuoteRequest, QuoteResponse, QuoteResponseWithId,
@@ -508,7 +507,6 @@ impl Notification for NotificationService {
                                     client_id_clone, err
                                 );
                             }
-                            DELIVERED_NOTIFICATIONS.inc();
                         }
                         Ok(None) => {
                             info!("Client ({}) Disconnected", client_id_clone);

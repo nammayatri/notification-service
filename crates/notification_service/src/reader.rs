@@ -25,8 +25,8 @@ use crate::{
         types::NotificationData,
     },
     tools::prometheus::{
-        CHANNEL_DELAY, CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION,
-        NOTIFICATION_LATENCY, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+        CHANNEL_DELAY, CONNECTED_CLIENTS, DELIVERED_NOTIFICATIONS, EXPIRED_NOTIFICATIONS,
+        MEASURE_DURATION, NOTIFICATION_LATENCY, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
@@ -98,8 +98,9 @@ async fn clear_expired_notification(
     shard: &Shard,
     client_id: &str,
     notification_stream_id: &StreamEntry,
+    category: &str,
 ) {
-    EXPIRED_NOTIFICATIONS.inc();
+    EXPIRED_NOTIFICATIONS.with_label_values(&[category]).inc();
 
     let _ = clean_up_notification(
         redis_pool,
@@ -224,7 +225,7 @@ async fn client_reciever(
             .await;
         }
         SenderType::ClientAck((notification_id, session_id)) => {
-            if let Some(session_id) = session_id {
+            let category = if let Some(session_id) = session_id {
                 if let Some(SessionMap::Multi(client)) = clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
@@ -236,12 +237,14 @@ async fn client_reciever(
                         active_notification
                             .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                             .await
-                            .acknowledge(&notification_id);
+                            .acknowledge(&notification_id)
                     } else {
                         error!("[Notification Service Error] - SessionId not found in the Client Shard");
+                        None
                     }
                 } else {
                     error!("[Notification Service Error] - Multi Client Session not found for the Client");
+                    None
                 }
             } else if let Some(SessionMap::Single((_, active_notification))) = clients_tx
                 .get(shard.inner() as usize)
@@ -253,10 +256,17 @@ async fn client_reciever(
                 active_notification
                     .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                     .await
-                    .acknowledge(&notification_id);
+                    .acknowledge(&notification_id)
             } else {
                 error!("[Notification Service Error] - ClientId not found in the Shard");
+                None
             };
+
+            if let Some(category) = category {
+                DELIVERED_NOTIFICATIONS
+                    .with_label_values(&[&category])
+                    .inc();
+            }
         }
     }
 }
@@ -371,10 +381,48 @@ async fn retry_notifications(
                             }
 
                             for notification in notifications {
-                                if read_all_connected_client_notifications {
-                                    TOTAL_NOTIFICATIONS.inc();
-                                } else {
-                                    RETRIED_NOTIFICATIONS.inc();
+                                let observation = {
+                                    let clients_read = clients_tx_clone
+                                        .get(shard.inner() as usize)
+                                        .expect("This error is impossible")
+                                        .read(RwLockName::ClientTxStore, RwLockOperation::Read)
+                                        .await;
+                                    let active = match clients_read.get(&client_id) {
+                                        Some(SessionMap::Single((_, active))) => Some(active.clone()),
+                                        Some(SessionMap::Multi(client)) => client
+                                            .values()
+                                            .next()
+                                            .map(|(_, active)| active.clone()),
+                                        None => None,
+                                    };
+                                    drop(clients_read);
+                                    if let Some(active) = active {
+                                        Some(
+                                            active
+                                                .write(
+                                                    RwLockName::ActiveNotificationStore,
+                                                    RwLockOperation::Write,
+                                                )
+                                                .await
+                                                .observe_for_retry_metric(&notification),
+                                        )
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                match observation {
+                                    Some(NotificationObservation::FirstSighting) => {
+                                        TOTAL_NOTIFICATIONS
+                                            .with_label_values(&[&notification.category])
+                                            .inc();
+                                    }
+                                    Some(NotificationObservation::FirstRetry) => {
+                                        RETRIED_NOTIFICATIONS
+                                            .with_label_values(&[&notification.category])
+                                            .inc();
+                                    }
+                                    Some(NotificationObservation::AlreadyCounted) | None => {}
                                 }
 
                                 if notification.ttl.inner() < Utc::now() {
@@ -383,6 +431,7 @@ async fn retry_notifications(
                                         &shard.clone(),
                                         &client_id.inner(),
                                         &notification.stream_id.clone(),
+                                        &notification.category,
                                     )
                                     .await;
                                 } else {
@@ -506,8 +555,6 @@ async fn active_notification(
         };
 
         if !all_clients_tx.is_empty() {
-            TOTAL_NOTIFICATIONS.inc();
-
             if let Ok(notifications) =
                 read_client_notification(redis_pool, &client_id, &shard).await
             {
@@ -544,12 +591,17 @@ async fn active_notification(
                 }
 
                 for notification in notifications {
+                    TOTAL_NOTIFICATIONS
+                        .with_label_values(&[&notification.category])
+                        .inc();
+
                     if notification.ttl.inner() < Utc::now() {
                         clear_expired_notification(
                             redis_pool,
                             &shard,
                             &client_id.inner(),
                             &notification.stream_id.clone(),
+                            &notification.category,
                         )
                         .await;
                     } else {
