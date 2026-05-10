@@ -64,11 +64,13 @@ async fn send_notification(
         )
     });
 
+    let client_tx_send_start_time = tokio::time::Instant::now();
     client_tx
         .send(Ok(transform_notification_data_to_payload(
             notification.clone(),
         )))
         .await?;
+    measure_latency_duration!("client_tx_send", client_tx_send_start_time);
 
     notification_latency!(
         get_timestamp_from_stream_id(&notification.stream_id.inner()).inner(),
@@ -558,6 +560,7 @@ async fn active_notification(
             let redis_pool = redis_pool.clone();
             let clients_tx = clients_tx.clone();
             tokio::spawn(async move {
+                let active_notification_dispatch_start_time = tokio::time::Instant::now();
                 if let Ok(notifications) =
                     read_client_notification(&redis_pool, &client_id, &shard).await
                 {
@@ -592,6 +595,11 @@ async fn active_notification(
                             client_id
                         ),
                     }
+
+                    measure_latency_duration!(
+                        "active_notification_dispatch",
+                        active_notification_dispatch_start_time
+                    );
 
                     for notification in notifications {
                         TOTAL_NOTIFICATIONS
