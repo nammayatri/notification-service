@@ -54,20 +54,15 @@ pub struct NotificationMeta {
     pub ttl: Ttl,
     pub category: String,
     pub stream_id: StreamEntry,
+    pub total_counted: bool,
     pub retry_counted: bool,
+    pub expired_counted: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct AcknowledgedNotification {
     pub category: String,
     pub stream_id: StreamEntry,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum NotificationObservation {
-    FirstSighting,
-    FirstRetry,
-    AlreadyCounted,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Default)]
@@ -81,7 +76,9 @@ impl ActiveNotification {
                 ttl: notification.ttl,
                 category: notification.category,
                 stream_id: notification.stream_id,
+                total_counted: false,
                 retry_counted: false,
+                expired_counted: false,
             });
         }
     }
@@ -102,10 +99,10 @@ impl ActiveNotification {
             })
     }
 
-    pub fn observe_for_retry_metric(
-        &mut self,
-        notification: &NotificationData,
-    ) -> NotificationObservation {
+    /// Returns true the first time TOTAL is claimed for this notification id
+    /// within this client's connection lifetime. Inserts a tracking entry if
+    /// none exists yet so `try_claim_retry` / `try_claim_expired` can fire later.
+    pub fn try_claim_total(&mut self, notification: &NotificationData) -> bool {
         match self.0.get_mut(&notification.id) {
             None => {
                 self.0.insert(
@@ -114,16 +111,42 @@ impl ActiveNotification {
                         ttl: notification.ttl.clone(),
                         category: notification.category.clone(),
                         stream_id: notification.stream_id.clone(),
+                        total_counted: true,
                         retry_counted: false,
+                        expired_counted: false,
                     },
                 );
-                NotificationObservation::FirstSighting
+                true
             }
-            Some(meta) if !meta.retry_counted => {
+            Some(meta) if !meta.total_counted => {
+                meta.total_counted = true;
+                true
+            }
+            Some(_) => false,
+        }
+    }
+
+    /// Returns true the first time RETRIED is claimed. Only succeeds if the
+    /// notification has already been counted as TOTAL once — second observation
+    /// onward.
+    pub fn try_claim_retry(&mut self, notification_id: &NotificationId) -> bool {
+        match self.0.get_mut(notification_id) {
+            Some(meta) if meta.total_counted && !meta.retry_counted => {
                 meta.retry_counted = true;
-                NotificationObservation::FirstRetry
+                true
             }
-            Some(_) => NotificationObservation::AlreadyCounted,
+            _ => false,
+        }
+    }
+
+    /// Returns true the first time EXPIRED is claimed for this notification id.
+    pub fn try_claim_expired(&mut self, notification_id: &NotificationId) -> bool {
+        match self.0.get_mut(notification_id) {
+            Some(meta) if !meta.expired_counted => {
+                meta.expired_counted = true;
+                true
+            }
+            _ => false,
         }
     }
 
