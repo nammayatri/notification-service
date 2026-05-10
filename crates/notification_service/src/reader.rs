@@ -43,6 +43,16 @@ use tokio::{
 use tracing::*;
 
 #[macros::measure_duration]
+async fn client_tx_send(client_tx: &ClientTx, notification: &NotificationData) -> Result<()> {
+    client_tx
+        .send(Ok(transform_notification_data_to_payload(
+            notification.clone(),
+        )))
+        .await?;
+    Ok(())
+}
+
+#[macros::measure_duration]
 async fn send_notification(
     client_id: &ClientId,
     client_tx: &ClientTx,
@@ -64,13 +74,7 @@ async fn send_notification(
         )
     });
 
-    let client_tx_send_start_time = tokio::time::Instant::now();
-    client_tx
-        .send(Ok(transform_notification_data_to_payload(
-            notification.clone(),
-        )))
-        .await?;
-    measure_latency_duration!("client_tx_send", client_tx_send_start_time);
+    client_tx_send(client_tx, &notification).await?;
 
     notification_latency!(
         get_timestamp_from_stream_id(&notification.stream_id.inner()).inner(),
@@ -512,6 +516,47 @@ async fn retry_notifications_looper(
     }
 }
 
+#[macros::measure_duration]
+async fn active_notification_dispatch(
+    redis_pool: &RedisConnectionPool,
+    clients_tx: &Arc<Vec<MonitoredRwLock<ReaderMap>>>,
+    client_id: &ClientId,
+    shard: &Shard,
+) -> Option<Vec<NotificationData>> {
+    let notifications = read_client_notification(redis_pool, client_id, shard).await.ok()?;
+
+    match clients_tx
+        .get(shard.inner() as usize)
+        .expect("This error is impossible")
+        .write(RwLockName::ClientTxStore, RwLockOperation::Write)
+        .await
+        .get_mut(client_id)
+    {
+        Some(SessionMap::Single((_, active_notification))) => {
+            active_notification
+                .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
+                .await
+                .update(notifications.to_owned());
+        }
+        Some(SessionMap::Multi(client)) => {
+            stream::iter(client.iter_mut())
+                .for_each_concurrent(None, |(_, (_, active_notification))| async {
+                    active_notification
+                        .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
+                        .await
+                        .update(notifications.to_owned());
+                })
+                .await;
+        }
+        None => error!(
+            "[Notification Service Error] - ClientId {:?} not found here.",
+            client_id
+        ),
+    }
+
+    Some(notifications)
+}
+
 async fn active_notification(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
@@ -560,47 +605,9 @@ async fn active_notification(
             let redis_pool = redis_pool.clone();
             let clients_tx = clients_tx.clone();
             tokio::spawn(async move {
-                let active_notification_dispatch_start_time = tokio::time::Instant::now();
-                if let Ok(notifications) =
-                    read_client_notification(&redis_pool, &client_id, &shard).await
+                if let Some(notifications) =
+                    active_notification_dispatch(&redis_pool, &clients_tx, &client_id, &shard).await
                 {
-                    match clients_tx
-                        .get(shard.inner() as usize)
-                        .expect("This error is impossible")
-                        .write(RwLockName::ClientTxStore, RwLockOperation::Write)
-                        .await
-                        .get_mut(&client_id)
-                    {
-                        Some(SessionMap::Single((_, active_notification))) => {
-                            active_notification
-                                .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
-                                .await
-                                .update(notifications.to_owned());
-                        }
-                        Some(SessionMap::Multi(client)) => {
-                            stream::iter(client.iter_mut())
-                                .for_each_concurrent(None, |(_, (_, active_notification))| async {
-                                    active_notification
-                                        .write(
-                                            RwLockName::ActiveNotificationStore,
-                                            RwLockOperation::Write,
-                                        )
-                                        .await
-                                        .update(notifications.to_owned());
-                                })
-                                .await;
-                        }
-                        None => error!(
-                            "[Notification Service Error] - ClientId {:?} not found here.",
-                            client_id
-                        ),
-                    }
-
-                    measure_latency_duration!(
-                        "active_notification_dispatch",
-                        active_notification_dispatch_start_time
-                    );
-
                     for notification in notifications {
                         TOTAL_NOTIFICATIONS
                             .with_label_values(&[&notification.category])
