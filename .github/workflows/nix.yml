@@ -13,7 +13,7 @@ on:
 
 jobs:
   build:
-    runs-on: linux-first-floor
+    runs-on: x86_64-linux
     outputs:
       docker-image-name: ${{ steps.docker.outputs.image_name }}
     steps:
