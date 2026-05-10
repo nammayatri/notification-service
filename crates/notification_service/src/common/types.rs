@@ -68,10 +68,9 @@ pub enum NotificationObservation {
 pub struct ActiveNotification(pub FxHashMap<NotificationId, NotificationMeta>);
 
 impl ActiveNotification {
-    pub fn update(&self, notifications: Vec<NotificationData>) {
-        let mut inner = self.inner();
+    pub fn update(&mut self, notifications: Vec<NotificationData>) {
         for notification in notifications {
-            inner.entry(notification.id).or_insert(NotificationMeta {
+            self.0.entry(notification.id).or_insert(NotificationMeta {
                 ttl: notification.ttl,
                 category: notification.category,
                 retry_counted: false,
@@ -80,26 +79,20 @@ impl ActiveNotification {
     }
 
     pub fn count(&self) -> usize {
-        self.inner().len()
+        self.0.len()
     }
 
-    pub fn acknowledge(&self, notification_id: &NotificationId) -> Option<String> {
-        self.inner()
-            .remove(notification_id)
-            .map(|meta| meta.category)
+    pub fn acknowledge(&mut self, notification_id: &NotificationId) -> Option<String> {
+        self.0.remove(notification_id).map(|meta| meta.category)
     }
 
-    /// Classifies a notification observed by the retry loop and updates the
-    /// map so each id is counted at most once for `total` and once for `retry`.
-    /// Returns the metric bucket the caller should increment (if any).
     pub fn observe_for_retry_metric(
-        &self,
+        &mut self,
         notification: &NotificationData,
     ) -> NotificationObservation {
-        let mut inner = self.inner();
-        match inner.get_mut(&notification.id) {
+        match self.0.get_mut(&notification.id) {
             None => {
-                inner.insert(
+                self.0.insert(
                     notification.id.clone(),
                     NotificationMeta {
                         ttl: notification.ttl.clone(),
@@ -117,19 +110,9 @@ impl ActiveNotification {
         }
     }
 
-    pub fn refresh(&self) {
+    pub fn refresh(&mut self) {
         let now = Utc::now();
-
-        let expired_notifications: Vec<NotificationId> = self
-            .inner()
-            .iter()
-            .filter(|(_, meta)| meta.ttl.inner() < now)
-            .map(|(id, _)| id.to_owned())
-            .collect();
-
-        for id in expired_notifications {
-            self.inner().remove(&id);
-        }
+        self.0.retain(|_, meta| meta.ttl.inner() >= now);
     }
 }
 

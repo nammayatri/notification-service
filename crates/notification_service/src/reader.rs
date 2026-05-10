@@ -380,13 +380,13 @@ async fn retry_notifications(
                                     .await
                                     .get(&client_id) {
                                         Some(SessionMap::Single((_, active_notification))) => {
-                                            if let Ok(active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
+                                            if let Ok(mut active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
                                                 active_notification.refresh()
                                             }
                                         },
                                         Some(SessionMap::Multi(client)) => {
                                             for (_, (_, active_notification)) in client.iter() {
-                                                if let Ok(active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
+                                                if let Ok(mut active_notification) = active_notification.try_write(RwLockName::ActiveNotificationStore,RwLockOperation::TryWrite) {
                                                     active_notification.refresh()
                                                 }
                                             }
