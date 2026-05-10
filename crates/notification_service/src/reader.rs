@@ -511,7 +511,7 @@ async fn retry_notifications_looper(
 }
 
 async fn active_notification(
-    redis_pool: &RedisConnectionPool,
+    redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
     active_notification_receiver_stream: &mut UnboundedReceiver<(
         String,
@@ -555,72 +555,76 @@ async fn active_notification(
         };
 
         if !all_clients_tx.is_empty() {
-            if let Ok(notifications) =
-                read_client_notification(redis_pool, &client_id, &shard).await
-            {
-                match clients_tx
-                    .get(shard.inner() as usize)
-                    .expect("This error is impossible")
-                    .write(RwLockName::ClientTxStore, RwLockOperation::Write)
-                    .await
-                    .get_mut(&client_id)
+            let redis_pool = redis_pool.clone();
+            let clients_tx = clients_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(notifications) =
+                    read_client_notification(&redis_pool, &client_id, &shard).await
                 {
-                    Some(SessionMap::Single((_, active_notification))) => {
-                        active_notification
-                            .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
-                            .await
-                            .update(notifications.to_owned());
+                    match clients_tx
+                        .get(shard.inner() as usize)
+                        .expect("This error is impossible")
+                        .write(RwLockName::ClientTxStore, RwLockOperation::Write)
+                        .await
+                        .get_mut(&client_id)
+                    {
+                        Some(SessionMap::Single((_, active_notification))) => {
+                            active_notification
+                                .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
+                                .await
+                                .update(notifications.to_owned());
+                        }
+                        Some(SessionMap::Multi(client)) => {
+                            stream::iter(client.iter_mut())
+                                .for_each_concurrent(None, |(_, (_, active_notification))| async {
+                                    active_notification
+                                        .write(
+                                            RwLockName::ActiveNotificationStore,
+                                            RwLockOperation::Write,
+                                        )
+                                        .await
+                                        .update(notifications.to_owned());
+                                })
+                                .await;
+                        }
+                        None => error!(
+                            "[Notification Service Error] - ClientId {:?} not found here.",
+                            client_id
+                        ),
                     }
-                    Some(SessionMap::Multi(client)) => {
-                        stream::iter(client.iter_mut())
-                            .for_each_concurrent(None, |(_, (_, active_notification))| async {
-                                active_notification
-                                    .write(
-                                        RwLockName::ActiveNotificationStore,
-                                        RwLockOperation::Write,
-                                    )
-                                    .await
-                                    .update(notifications.to_owned());
-                            })
-                            .await;
-                    }
-                    None => error!(
-                        "[Notification Service Error] - ClientId {:?} not found here.",
-                        client_id
-                    ),
-                }
 
-                for notification in notifications {
-                    TOTAL_NOTIFICATIONS
-                        .with_label_values(&[&notification.category])
-                        .inc();
+                    for notification in notifications {
+                        TOTAL_NOTIFICATIONS
+                            .with_label_values(&[&notification.category])
+                            .inc();
 
-                    if notification.ttl.inner() < Utc::now() {
-                        clear_expired_notification(
-                            redis_pool,
-                            &shard,
-                            &client_id.inner(),
-                            &notification.stream_id.clone(),
-                            &notification.category,
-                        )
-                        .await;
-                    } else {
-                        for client_tx in all_clients_tx.clone() {
-                            if let Err(err) = send_notification(
-                                &client_id,
-                                &client_tx,
-                                notification.to_owned(),
-                                redis_pool,
+                        if notification.ttl.inner() < Utc::now() {
+                            clear_expired_notification(
+                                &redis_pool,
                                 &shard,
+                                &client_id.inner(),
+                                &notification.stream_id.clone(),
+                                &notification.category,
                             )
-                            .await
-                            {
-                                warn!("[Send Failed] : {}", err);
+                            .await;
+                        } else {
+                            for client_tx in all_clients_tx.clone() {
+                                if let Err(err) = send_notification(
+                                    &client_id,
+                                    &client_tx,
+                                    notification.to_owned(),
+                                    &redis_pool,
+                                    &shard,
+                                )
+                                .await
+                                {
+                                    warn!("[Send Failed] : {}", err);
+                                }
                             }
                         }
                     }
                 }
-            }
+            });
         } else {
             warn!("[Notification Service] - Client Not Connected to this Server")
         }
@@ -639,7 +643,7 @@ async fn active_notification_looper(
         .await
     {
         active_notification(
-            &redis_pool,
+            redis_pool.clone(),
             clients_tx.clone(),
             &mut active_notification_receiver_stream,
             max_shards,

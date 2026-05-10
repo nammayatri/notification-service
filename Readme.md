@@ -208,6 +208,73 @@ One drawback of this architecture is that it doesn't account for notification fa
 3. On testing, we found that if the client's wifi is turned off then the messages get sent once the client comes back on in some time, so it handles the cases where bandwidth fluctuates and offers some amount of reliability to Network failures.
 4. We can also set a keep alive ping that can ask for acknowledgement from clients to be sure the client is not away for too long. If so then, we can forcefully terminate the connection and ask the client to reconnect.
 
+## **Architecture: `read_all_connected_client_notifications` flag**
+
+The notification reader (`crates/notification_service/src/reader.rs`) supports two operating modes, selected by the `read_all_connected_client_notifications` boolean in `notification_service.dhall`. Both modes share the same gRPC ingress, per-shard `ReaderMap` (`Arc<Vec<MonitoredRwLock<ReaderMap>>>`) keyed by `ClientId`, Redis Streams as the durable per-client queue, and the `send_notification → set_notification_stream_id → client_tx.send → clean_up_notification` send path. They differ in how the server learns that a notification is ready.
+
+### Shared components
+
+- **gRPC `StreamPayload`** — bi-directional stream between client and `Notification Server`; carries notifications server→client and ACKs client→server.
+- **`client_reciever_looper`** — handles `ClientConnection`, `ClientDisconnection`, and `ClientAck` events, mutating the shard map.
+- **`retry_notifications_looper`** — runs every `retry_delay_millis`, sweeps shards, and re-pushes notifications still in the Redis stream.
+- **`ActiveNotification`** — per-session in-memory tracker of unacked `stream_id`s, used to decide whether a client still has pending work.
+- **Redis Streams** — durable queue per client (`XADD`/`XREAD`), entries cleaned up via `clean_up_notification` on ACK or send.
+- **Redis Pub/Sub channel** (`pubsub_channel_key`) — fan-out signal that "client X has a new entry on its stream"; only used when the flag is `False`.
+
+### Mode A — `read_all_connected_client_notifications = false` (event-driven)
+
+```
+BAP/BPP --XADD-->  Redis Stream (per client)
+        --PUBLISH--> Redis Pub/Sub channel
+                            |
+                            v
+                  active_notification_looper
+                            |
+                            v   (read_client_notification + send)
+Client <==gRPC stream==  Notification Server <==periodic retry sweep== Redis
+                            ^
+                            | only clients with ActiveNotification.count() > 0
+```
+
+Behavior:
+1. **On connect** — `client_reciever` preloads pending entries via `ActiveNotification::new(redis_pool, client_id, shard)` so a reconnecting client immediately sees what it missed.
+2. **On new notification** — publisher `XADD`s the stream and `PUBLISH`es on the pub/sub channel. `active_notification_looper` subscribes to that channel; for each message it reads the client's stream and pushes to all live `client_tx`s for that `ClientId` (single or multi-session), updating the per-session `ActiveNotification`.
+3. **On ACK** — `ClientAck` calls `active_notification.acknowledge(notification_id)`, decrementing the unacked count.
+4. **Retry sweep** — `retry_notifications` only collects `client_id`s whose `ActiveNotification.count() > 0` (i.e. has unacked entries), then issues a batched `read_client_notifications` for that subset and resends. Resends increment `RETRIED_NOTIFICATIONS`.
+5. **Counters** — first delivery via the pub/sub path increments `TOTAL_NOTIFICATIONS`; retry resends increment `RETRIED_NOTIFICATIONS`.
+
+Trade-offs: minimal Redis I/O per tick (only clients with known unacked work are queried), low push latency (pub/sub fans out immediately), but requires the publisher and Redis to keep pub/sub healthy and requires per-session `ActiveNotification` state to stay accurate.
+
+### Mode B — `read_all_connected_client_notifications = true` (poll-all)
+
+```
+BAP/BPP --XADD-->  Redis Stream (per client)
+
+                  retry_notifications_looper  (every retry_delay_millis)
+                            |
+                            v   read_client_notifications(ALL connected client_ids)
+Client <==gRPC stream==  Notification Server
+```
+
+Behavior:
+1. **On connect** — `ActiveNotification` is initialized **empty** (`ActiveNotification::default()`); the connect-time Redis read is skipped because the retry loop will pick the client up on the next tick anyway.
+2. **No pub/sub path** — `active_notification_looper` is not spawned; `tokio::select!` runs only `client_reciever_looper`, `retry_notifications_looper`, and the graceful shutdown receiver.
+3. **Retry sweep** — `retry_notifications` ignores `ActiveNotification.count()` and returns *every* connected `client_id` per shard. A single batched `read_client_notifications` per shard fetches whatever is currently on each stream and pushes it.
+4. **Counters** — every delivery is counted as `TOTAL_NOTIFICATIONS` (there is no separate "retry" notion in this mode); `RETRIED_NOTIFICATIONS` is not incremented.
+
+Trade-offs: simpler invariants (no pub/sub dependency, no per-session unacked bookkeeping needed for correctness, recovers automatically after pub/sub gaps), at the cost of one Redis stream read per connected client per `retry_delay_millis`. Push latency is bounded by `retry_delay_millis` rather than pub/sub fan-out time. This is the default in `dhall-configs/dev/notification_service.dhall`.
+
+### Choosing between modes
+
+| Aspect | `false` (event-driven) | `true` (poll-all) |
+|---|---|---|
+| New-message latency | ~pub/sub RTT | up to `retry_delay_millis` |
+| Redis ops per tick | O(clients with unacked) | O(connected clients) |
+| Connect-time Redis read | yes (preload) | no (retry tick handles it) |
+| Pub/Sub dependency | required | none |
+| Active-notification tracking | load-bearing | bypassed in retry path |
+| Default in dev dhall | — | ✅ |
+
 ## Setting up development environment
 
 ### Nix
