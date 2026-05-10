@@ -45,7 +45,7 @@ pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
     once_cell::sync::Lazy::new(|| {
         register_histogram_vec!(
             opts!("notification_duration_seconds", "Notification Latency").into(),
-            &["version", "ack"]
+            &["version", "ack", "source"]
         )
         .expect("Failed to register notifiction latency metrics")
     });
@@ -133,12 +133,12 @@ macro_rules! incoming_api {
 
 #[macro_export]
 macro_rules! notification_latency {
-    ($start:expr, $ack:expr) => {
+    ($start:expr, $ack:expr, $source:expr) => {
         let now = Utc::now();
         let duration = abs_diff_utc_as_sec($start, now);
         let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
         NOTIFICATION_LATENCY
-            .with_label_values(&[version.as_str(), $ack])
+            .with_label_values(&[version.as_str(), $ack, $source])
             .observe(duration);
     };
 }

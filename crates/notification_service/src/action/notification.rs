@@ -487,7 +487,8 @@ impl Notification for NotificationService {
                                     notification_latency!(
                                         get_timestamp_from_stream_id(&notification_stream_id)
                                             .inner(),
-                                        "ACK"
+                                        "ACK",
+                                        "client"
                                     );
                                 }
                                 Ok(None) => {

@@ -59,6 +59,7 @@ async fn send_notification(
     notification: NotificationData,
     redis_pool: &RedisConnectionPool,
     shard: &Shard,
+    source: &'static str,
 ) -> Result<()> {
     let _ = set_notification_stream_id(
         redis_pool,
@@ -78,7 +79,8 @@ async fn send_notification(
 
     notification_latency!(
         get_timestamp_from_stream_id(&notification.stream_id.inner()).inner(),
-        "NACK"
+        "NACK",
+        source
     );
 
     let _ = clean_up_notification(
@@ -222,6 +224,7 @@ async fn client_reciever(
                         &client_id,
                         &shard,
                         &[client_tx_for_catchup],
+                        "catchup",
                     )
                     .await;
                 });
@@ -486,6 +489,7 @@ async fn retry_notifications(
                                             notification.to_owned(),
                                             &redis_pool_clone,
                                             &shard,
+                                            "retry",
                                         )
                                         .await
                                         {
@@ -573,6 +577,7 @@ async fn dispatch_and_send_notifications(
     client_id: &ClientId,
     shard: &Shard,
     target_client_txs: &[ClientTx],
+    source: &'static str,
 ) {
     let Some(notifications) =
         active_notification_dispatch(redis_pool, clients_tx, client_id, shard).await
@@ -602,6 +607,7 @@ async fn dispatch_and_send_notifications(
                     notification.to_owned(),
                     redis_pool,
                     shard,
+                    source,
                 )
                 .await
                 {
@@ -666,6 +672,7 @@ async fn active_notification(
                     &client_id,
                     &shard,
                     &all_clients_tx,
+                    "pubsub",
                 )
                 .await;
             });
