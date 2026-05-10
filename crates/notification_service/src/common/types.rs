@@ -96,10 +96,11 @@ impl ActiveNotification {
         Self(counter)
     }
 
-    pub fn update(&self, notifications: Vec<NotificationData>) -> Self {
-        let mut counter = FxHashMap::default();
+    pub fn update(&self, notifications: Vec<NotificationData>) {
+        let mut inner = self.inner();
+        inner.clear();
         for notification in notifications {
-            counter.insert(
+            inner.insert(
                 notification.id,
                 NotificationMeta {
                     ttl: notification.ttl,
@@ -108,7 +109,6 @@ impl ActiveNotification {
                 },
             );
         }
-        Self(counter)
     }
 
     pub fn count(&self) -> usize {
