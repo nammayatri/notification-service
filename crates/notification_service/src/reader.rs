@@ -523,7 +523,9 @@ async fn active_notification_dispatch(
     client_id: &ClientId,
     shard: &Shard,
 ) -> Option<Vec<NotificationData>> {
-    let notifications = read_client_notification(redis_pool, client_id, shard).await.ok()?;
+    let notifications = read_client_notification(redis_pool, client_id, shard)
+        .await
+        .ok()?;
 
     match clients_tx
         .get(shard.inner() as usize)
