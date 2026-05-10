@@ -98,16 +98,12 @@ impl ActiveNotification {
 
     pub fn update(&self, notifications: Vec<NotificationData>) {
         let mut inner = self.inner();
-        inner.clear();
         for notification in notifications {
-            inner.insert(
-                notification.id,
-                NotificationMeta {
-                    ttl: notification.ttl,
-                    category: notification.category,
-                    retry_counted: false,
-                },
-            );
+            inner.entry(notification.id).or_insert(NotificationMeta {
+                ttl: notification.ttl,
+                category: notification.category,
+                retry_counted: false,
+            });
         }
     }
 
