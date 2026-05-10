@@ -226,40 +226,40 @@ async fn client_reciever(
             .await;
         }
         SenderType::ClientAck((notification_id, session_id)) => {
-            let acked = if let Some(session_id) = session_id {
-                if let Some(SessionMap::Multi(client)) = clients_tx
+            let active_notification = {
+                let shard_guard = clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
-                    .write(RwLockName::ClientTxStore, RwLockOperation::Write)
-                    .await
-                    .get_mut(&client_id)
-                {
-                    if let Some((_, active_notification)) = client.get_mut(&session_id) {
-                        active_notification
-                            .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
-                            .await
-                            .acknowledge(&notification_id)
-                    } else {
-                        error!("[Notification Service Error] - SessionId not found in the Client Shard");
+                    .read(RwLockName::ClientTxStore, RwLockOperation::Read)
+                    .await;
+                match (shard_guard.get(&client_id), session_id) {
+                    (Some(SessionMap::Multi(client)), Some(session_id)) => {
+                        match client.get(&session_id) {
+                            Some((_, active)) => Some(active.clone()),
+                            None => {
+                                error!("[Notification Service Error] - SessionId not found in the Client Shard");
+                                None
+                            }
+                        }
+                    }
+                    (Some(SessionMap::Multi(_)), None) => {
+                        error!("[Notification Service Error] - Multi Client Session not found for the Client");
                         None
                     }
-                } else {
-                    error!("[Notification Service Error] - Multi Client Session not found for the Client");
-                    None
+                    (Some(SessionMap::Single((_, active))), _) => Some(active.clone()),
+                    (None, _) => {
+                        error!("[Notification Service Error] - ClientId not found in the Shard");
+                        None
+                    }
                 }
-            } else if let Some(SessionMap::Single((_, active_notification))) = clients_tx
-                .get(shard.inner() as usize)
-                .expect("This error is impossible!")
-                .write(RwLockName::ClientTxStore, RwLockOperation::Write)
-                .await
-                .get_mut(&client_id)
-            {
+            };
+
+            let acked = if let Some(active_notification) = active_notification {
                 active_notification
                     .write(RwLockName::ActiveNotificationStore, RwLockOperation::Write)
                     .await
                     .acknowledge(&notification_id)
             } else {
-                error!("[Notification Service Error] - ClientId not found in the Shard");
                 None
             };
 
