@@ -178,15 +178,8 @@ async fn client_reciever(
 
             let client_reciever_clients_tx_write_start_time = tokio::time::Instant::now();
 
-            // Skip Redis I/O when read_all_connected_client_notifications is true
-            // because retry loop already reads all notifications for all clients
-            let active_notification = if read_all_connected_client_notifications {
-                Arc::new(MonitoredRwLock::new(ActiveNotification::default()))
-            } else {
-                Arc::new(MonitoredRwLock::new(
-                    ActiveNotification::new(&redis_pool, &client_id, &shard).await,
-                ))
-            };
+            let active_notification = Arc::new(MonitoredRwLock::new(ActiveNotification::default()));
+            let client_tx_for_catchup = client_tx.clone();
 
             if let Some(session_id) = session_id {
                 let mut client = clients_tx
@@ -200,7 +193,7 @@ async fn client_reciever(
                 } else {
                     let mut client_session = FxHashMap::default();
                     client_session.insert(session_id, (client_tx, active_notification));
-                    client.insert(client_id, SessionMap::Multi(client_session));
+                    client.insert(client_id.clone(), SessionMap::Multi(client_session));
                 }
             } else {
                 clients_tx
@@ -209,7 +202,7 @@ async fn client_reciever(
                     .write(RwLockName::ClientTxStore, RwLockOperation::Write)
                     .await
                     .insert(
-                        client_id,
+                        client_id.clone(),
                         SessionMap::Single((client_tx, active_notification)),
                     );
             };
@@ -218,6 +211,21 @@ async fn client_reciever(
                 "client_reciever_clients_tx_write",
                 client_reciever_clients_tx_write_start_time
             );
+
+            if !read_all_connected_client_notifications {
+                let redis_pool = redis_pool.clone();
+                let clients_tx = clients_tx.clone();
+                tokio::spawn(async move {
+                    dispatch_and_send_notifications(
+                        &redis_pool,
+                        &clients_tx,
+                        &client_id,
+                        &shard,
+                        &[client_tx_for_catchup],
+                    )
+                    .await;
+                });
+            }
         }
         SenderType::ClientDisconnection(session_id) => {
             warn!("[Client Disconnected] : {:?} : {:?}", client_id, session_id);
@@ -559,6 +567,51 @@ async fn active_notification_dispatch(
     Some(notifications)
 }
 
+async fn dispatch_and_send_notifications(
+    redis_pool: &RedisConnectionPool,
+    clients_tx: &Arc<Vec<MonitoredRwLock<ReaderMap>>>,
+    client_id: &ClientId,
+    shard: &Shard,
+    target_client_txs: &[ClientTx],
+) {
+    let Some(notifications) =
+        active_notification_dispatch(redis_pool, clients_tx, client_id, shard).await
+    else {
+        return;
+    };
+
+    for notification in notifications {
+        TOTAL_NOTIFICATIONS
+            .with_label_values(&[&notification.category])
+            .inc();
+
+        if notification.ttl.inner() < Utc::now() {
+            clear_expired_notification(
+                redis_pool,
+                shard,
+                &client_id.inner(),
+                &notification.stream_id.clone(),
+                &notification.category,
+            )
+            .await;
+        } else {
+            for client_tx in target_client_txs {
+                if let Err(err) = send_notification(
+                    client_id,
+                    client_tx,
+                    notification.to_owned(),
+                    redis_pool,
+                    shard,
+                )
+                .await
+                {
+                    warn!("[Send Failed] : {}", err);
+                }
+            }
+        }
+    }
+}
+
 async fn active_notification(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<Vec<MonitoredRwLock<ReaderMap>>>,
@@ -607,40 +660,14 @@ async fn active_notification(
             let redis_pool = redis_pool.clone();
             let clients_tx = clients_tx.clone();
             tokio::spawn(async move {
-                if let Some(notifications) =
-                    active_notification_dispatch(&redis_pool, &clients_tx, &client_id, &shard).await
-                {
-                    for notification in notifications {
-                        TOTAL_NOTIFICATIONS
-                            .with_label_values(&[&notification.category])
-                            .inc();
-
-                        if notification.ttl.inner() < Utc::now() {
-                            clear_expired_notification(
-                                &redis_pool,
-                                &shard,
-                                &client_id.inner(),
-                                &notification.stream_id.clone(),
-                                &notification.category,
-                            )
-                            .await;
-                        } else {
-                            for client_tx in all_clients_tx.clone() {
-                                if let Err(err) = send_notification(
-                                    &client_id,
-                                    &client_tx,
-                                    notification.to_owned(),
-                                    &redis_pool,
-                                    &shard,
-                                )
-                                .await
-                                {
-                                    warn!("[Send Failed] : {}", err);
-                                }
-                            }
-                        }
-                    }
-                }
+                dispatch_and_send_notifications(
+                    &redis_pool,
+                    &clients_tx,
+                    &client_id,
+                    &shard,
+                    &all_clients_tx,
+                )
+                .await;
             });
         } else {
             warn!("[Notification Service] - Client Not Connected to this Server")
