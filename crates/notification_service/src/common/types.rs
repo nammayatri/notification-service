@@ -5,16 +5,11 @@
     or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details. You should have received a copy of
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-use crate::{
-    redis::{commands::read_client_notification, types::NotificationData},
-    tools::prometheus::RWLOCK_DELAY,
-    NotificationPayload,
-};
+use crate::{redis::types::NotificationData, tools::prometheus::RWLOCK_DELAY, NotificationPayload};
 
 use chrono::{DateTime, Utc};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use shared::redis::types::RedisConnectionPool;
 use std::sync::Arc;
 use strum_macros::{Display, EnumIter, EnumString};
 use tokio::sync::{mpsc::Sender, RwLock};
@@ -73,29 +68,6 @@ pub enum NotificationObservation {
 pub struct ActiveNotification(pub FxHashMap<NotificationId, NotificationMeta>);
 
 impl ActiveNotification {
-    /// Creates a new ActiveNotification by fetching pending notifications from Redis.
-    /// Use `default()` instead when read_all_connected_client_notifications is true.
-    pub async fn new(
-        redis_pool: &RedisConnectionPool,
-        client_id: &ClientId,
-        shard: &Shard,
-    ) -> Self {
-        let mut counter = FxHashMap::default();
-        if let Ok(notifications) = read_client_notification(redis_pool, client_id, shard).await {
-            for notification in notifications {
-                counter.insert(
-                    notification.id,
-                    NotificationMeta {
-                        ttl: notification.ttl,
-                        category: notification.category,
-                        retry_counted: false,
-                    },
-                );
-            }
-        }
-        Self(counter)
-    }
-
     pub fn update(&self, notifications: Vec<NotificationData>) {
         let mut inner = self.inner();
         for notification in notifications {

@@ -283,6 +283,10 @@ async fn client_reciever(
                 DELIVERED_NOTIFICATIONS
                     .with_label_values(&[&category])
                     .inc();
+            } else {
+                DELIVERED_NOTIFICATIONS
+                    .with_label_values(&["UNKNOWN"])
+                    .inc()
             }
         }
     }
@@ -689,19 +693,38 @@ async fn active_notification_looper(
     max_shards: u64,
 ) {
     let pubsub_channel_key = pubsub_channel_key();
-    if let Ok(mut active_notification_receiver_stream) = redis_pool
-        .subscribe_channel::<NotificationMessage>(pubsub_channel_key)
-        .await
-    {
-        active_notification(
-            redis_pool.clone(),
-            clients_tx.clone(),
-            &mut active_notification_receiver_stream,
-            max_shards,
-        )
-        .await;
-    } else {
-        error!("[Notification Service Error] - Unable to Subscribe to Channel")
+    loop {
+        match redis_pool
+            .subscribe_channel::<NotificationMessage>(pubsub_channel_key)
+            .await
+        {
+            Ok(mut active_notification_receiver_stream) => {
+                info!(
+                    "[Notification Service] - Subscribed to pubsub channel {}",
+                    pubsub_channel_key
+                );
+                active_notification(
+                    redis_pool.clone(),
+                    clients_tx.clone(),
+                    &mut active_notification_receiver_stream,
+                    max_shards,
+                )
+                .await;
+                error!(
+                    "[Notification Service Error] - Pubsub subscription dropped, sweeping all connected clients before re-subscribing"
+                );
+            }
+            Err(err) => {
+                error!(
+                    "[Notification Service Error] - Unable to Subscribe to Channel: {:?}",
+                    err
+                );
+            }
+        }
+
+        retry_notifications(redis_pool.clone(), clients_tx.clone(), true).await;
+
+        sleep(Duration::from_secs(1)).await;
     }
 }
 
