@@ -53,7 +53,14 @@ pub struct StreamEntry(pub String);
 pub struct NotificationMeta {
     pub ttl: Ttl,
     pub category: String,
+    pub stream_id: StreamEntry,
     pub retry_counted: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcknowledgedNotification {
+    pub category: String,
+    pub stream_id: StreamEntry,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -73,6 +80,7 @@ impl ActiveNotification {
             self.0.entry(notification.id).or_insert(NotificationMeta {
                 ttl: notification.ttl,
                 category: notification.category,
+                stream_id: notification.stream_id,
                 retry_counted: false,
             });
         }
@@ -82,8 +90,16 @@ impl ActiveNotification {
         self.0.len()
     }
 
-    pub fn acknowledge(&mut self, notification_id: &NotificationId) -> Option<String> {
-        self.0.remove(notification_id).map(|meta| meta.category)
+    pub fn acknowledge(
+        &mut self,
+        notification_id: &NotificationId,
+    ) -> Option<AcknowledgedNotification> {
+        self.0
+            .remove(notification_id)
+            .map(|meta| AcknowledgedNotification {
+                category: meta.category,
+                stream_id: meta.stream_id,
+            })
     }
 
     pub fn observe_for_retry_metric(
@@ -97,6 +113,7 @@ impl ActiveNotification {
                     NotificationMeta {
                         ttl: notification.ttl.clone(),
                         category: notification.category.clone(),
+                        stream_id: notification.stream_id.clone(),
                         retry_counted: false,
                     },
                 );

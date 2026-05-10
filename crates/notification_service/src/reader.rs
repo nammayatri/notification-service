@@ -54,11 +54,9 @@ async fn client_tx_send(client_tx: &ClientTx, notification: &NotificationData) -
 
 #[macros::measure_duration]
 async fn send_notification(
-    client_id: &ClientId,
     client_tx: &ClientTx,
     notification: NotificationData,
     redis_pool: &RedisConnectionPool,
-    shard: &Shard,
     source: &'static str,
 ) -> Result<()> {
     let _ = set_notification_stream_id(
@@ -82,20 +80,6 @@ async fn send_notification(
         "NACK",
         source
     );
-
-    let _ = clean_up_notification(
-        redis_pool,
-        &client_id.inner(),
-        &notification.stream_id.inner(),
-        shard,
-    )
-    .await
-    .map_err(|err| {
-        error!(
-            "[Notification Service Error] - Error in clean_up_notification : {}",
-            err
-        )
-    });
 
     Ok(())
 }
@@ -242,7 +226,7 @@ async fn client_reciever(
             .await;
         }
         SenderType::ClientAck((notification_id, session_id)) => {
-            let category = if let Some(session_id) = session_id {
+            let acked = if let Some(session_id) = session_id {
                 if let Some(SessionMap::Multi(client)) = clients_tx
                     .get(shard.inner() as usize)
                     .expect("This error is impossible!")
@@ -279,10 +263,23 @@ async fn client_reciever(
                 None
             };
 
-            if let Some(category) = category {
+            if let Some(acked) = acked {
                 DELIVERED_NOTIFICATIONS
-                    .with_label_values(&[&category])
+                    .with_label_values(&[&acked.category])
                     .inc();
+                let _ = clean_up_notification(
+                    &redis_pool,
+                    &client_id.inner(),
+                    &acked.stream_id.inner(),
+                    &shard,
+                )
+                .await
+                .map_err(|err| {
+                    error!(
+                        "[Notification Service Error] - Error in clean_up_notification : {}",
+                        err
+                    )
+                });
             } else {
                 DELIVERED_NOTIFICATIONS
                     .with_label_values(&["UNKNOWN"])
@@ -488,11 +485,9 @@ async fn retry_notifications(
 
                                     for client_tx in clients_tx {
                                         if let Err(err) = send_notification(
-                                            &client_id,
                                             &client_tx,
                                             notification.to_owned(),
                                             &redis_pool_clone,
-                                            &shard,
                                             "retry",
                                         )
                                         .await
@@ -605,15 +600,8 @@ async fn dispatch_and_send_notifications(
             .await;
         } else {
             for client_tx in target_client_txs {
-                if let Err(err) = send_notification(
-                    client_id,
-                    client_tx,
-                    notification.to_owned(),
-                    redis_pool,
-                    shard,
-                    source,
-                )
-                .await
+                if let Err(err) =
+                    send_notification(client_tx, notification.to_owned(), redis_pool, source).await
                 {
                     warn!("[Send Failed] : {}", err);
                 }
