@@ -19,20 +19,31 @@ use crate::{
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use shared::tools::logger::setup_tracing;
 use std::{
     env::var,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::Arc,
 };
 use tokio::{
     signal::unix::{signal, SignalKind},
     sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, Receiver, Sender},
         oneshot,
     },
 };
 use tonic::transport::Server;
 use tracing::*;
+
+/// Bounded queue depth for the control-plane mpsc (connect + disconnect events).
+/// ACKs no longer flow through this channel — they're handled inline in the gRPC
+/// stream task via the shared `ReaderMap` DashMap. So steady-state traffic here
+/// is only connect/disconnect, which is orders of magnitude lower than ACK
+/// volume. 8 192 gives generous headroom even under reconnect storms; the
+/// previous `unbounded_channel` was an OOM hazard with no observability into
+/// queue depth.
+const CONTROL_PLANE_CHANNEL_BUFFER: usize = 8_192;
 
 pub async fn run_server() -> Result<()> {
     let dhall_config_path = var("DHALL_CONFIG")
@@ -53,9 +64,21 @@ pub async fn run_server() -> Result<()> {
     let app_state = AppState::new(app_config).await;
     #[allow(clippy::type_complexity)]
     let (read_notification_tx, read_notification_rx): (
-        UnboundedSender<(ClientId, SenderType, DateTime<Utc>)>,
-        UnboundedReceiver<(ClientId, SenderType, DateTime<Utc>)>,
-    ) = mpsc::unbounded_channel();
+        Sender<(ClientId, SenderType, DateTime<Utc>)>,
+        Receiver<(ClientId, SenderType, DateTime<Utc>)>,
+    ) = mpsc::channel(CONTROL_PLANE_CHANNEL_BUFFER);
+
+    // One shared DashMap for every connected client on this pod. Replaces the
+    // 128 × MonitoredRwLock<FxHashMap> shard array. DashMap is internally
+    // sharded with per-bucket sync locks held for microseconds. The shard
+    // count argument here is DashMap's *internal* hash partition for lock
+    // granularity — completely independent of `max_shards`, which remains a
+    // contract with the producer for Redis stream-key construction.
+    let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_capacity_and_hasher_and_shard_amount(
+        16_384,
+        FxBuildHasher::default(),
+        (app_state.max_shards as usize).next_power_of_two().max(64),
+    ));
 
     let (signal_tx, signal_rx) = oneshot::channel();
     tokio::spawn(async move {
@@ -77,6 +100,7 @@ pub async fn run_server() -> Result<()> {
         read_notification_rx,
         signal_rx,
         app_state.redis_pool.clone(),
+        clients_tx.clone(),
         app_state.retry_delay_millis,
         app_state.max_shards,
         read_all_connected_client_notifications,
@@ -99,7 +123,8 @@ pub async fn run_server() -> Result<()> {
     let middleware = tower::ServiceBuilder::new()
         .layer(RequestResponseTrackingMiddlewareLayer)
         .into_inner();
-    let notification_service = NotificationService::new(read_notification_tx, app_state);
+    let notification_service =
+        NotificationService::new(read_notification_tx, clients_tx.clone(), app_state);
     let grpc_server = Server::builder()
         .layer(middleware)
         .add_service(NotificationServer::new(notification_service))

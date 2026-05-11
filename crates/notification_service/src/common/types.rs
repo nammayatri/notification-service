@@ -5,17 +5,20 @@
     or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details. You should have received a copy of
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-use crate::{redis::types::NotificationData, tools::prometheus::RWLOCK_DELAY, NotificationPayload};
+use crate::{redis::types::NotificationData, NotificationPayload};
 
 use chrono::{DateTime, Utc};
-use rustc_hash::FxHashMap;
+use dashmap::DashMap;
+use parking_lot::Mutex;
+use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
+use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 use strum_macros::{Display, EnumIter, EnumString};
-use tokio::sync::{mpsc::Sender, RwLock};
-use tokio::sync::{RwLockReadGuard, RwLockWriteGuard, TryLockError};
-use tokio::time::Instant;
+use tokio::sync::mpsc::Sender;
 use tonic::Status;
+
+pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
 
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 #[macros::impl_getter]
@@ -99,9 +102,6 @@ impl ActiveNotification {
             })
     }
 
-    /// Returns true the first time TOTAL is claimed for this notification id
-    /// within this client's connection lifetime. Inserts a tracking entry if
-    /// none exists yet so `try_claim_retry` / `try_claim_expired` can fire later.
     pub fn try_claim_total(&mut self, notification: &NotificationData) -> bool {
         match self.0.get_mut(&notification.id) {
             None => {
@@ -126,9 +126,6 @@ impl ActiveNotification {
         }
     }
 
-    /// Returns true the first time RETRIED is claimed. Only succeeds if the
-    /// notification has already been counted as TOTAL once — second observation
-    /// onward.
     pub fn try_claim_retry(&mut self, notification_id: &NotificationId) -> bool {
         match self.0.get_mut(notification_id) {
             Some(meta) if meta.total_counted && !meta.retry_counted => {
@@ -139,7 +136,6 @@ impl ActiveNotification {
         }
     }
 
-    /// Returns true the first time EXPIRED is claimed for this notification id.
     pub fn try_claim_expired(&mut self, notification_id: &NotificationId) -> bool {
         match self.0.get_mut(notification_id) {
             Some(meta) if !meta.expired_counted => {
@@ -171,18 +167,25 @@ pub enum SenderType {
 
     #[strum(to_string = "ClientDisconnection")]
     ClientDisconnection(Option<SessionID>),
-
-    #[strum(to_string = "ClientAck")]
-    ClientAck((NotificationId, Option<SessionID>)),
 }
 
 #[derive(Clone, Debug)]
 pub enum SessionMap {
-    Single((ClientTx, Arc<MonitoredRwLock<ActiveNotification>>)), // A single session with a (ClientTx, Counter)
-    Multi(FxHashMap<SessionID, (ClientTx, Arc<MonitoredRwLock<ActiveNotification>>)>), // Multiple sessions
+    Single((ClientTx, Arc<Mutex<ActiveNotification>>)),
+    Multi(FxHashMap<SessionID, (ClientTx, Arc<Mutex<ActiveNotification>>)>),
 }
 
-pub type ReaderMap = FxHashMap<ClientId, SessionMap>;
+#[derive(Clone, Debug)]
+pub struct ClientEntry {
+    /// Pre-computed shard for this client. Set once at connect time using
+    /// `hash_uuid(client_id) % max_shards`. The shard is part of the Redis
+    /// stream key contract with the producer (`notification_client_key`),
+    /// so it must match what the producer computes for the same client id.
+    pub shard: Shard,
+    pub sessions: SessionMap,
+}
+
+pub type ReaderMap = DashMap<ClientId, ClientEntry, FxBuildHasher>;
 
 #[derive(
     Debug, Clone, EnumString, EnumIter, Display, Serialize, Deserialize, Eq, Hash, PartialEq,
@@ -192,119 +195,6 @@ pub enum TokenOrigin {
     RiderApp,
     DriverDashboard,
     RiderDashboard,
-}
-
-#[derive(Debug)]
-pub enum RwLockName {
-    ActiveNotificationStore,
-    ClientTxStore,
-}
-
-impl RwLockName {
-    fn as_str(&self) -> &'static str {
-        match self {
-            RwLockName::ActiveNotificationStore => "active-notification-store",
-            RwLockName::ClientTxStore => "client-tx-store",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum RwLockOperation {
-    Read,
-    Write,
-    TryRead,
-    TryWrite,
-}
-
-impl RwLockOperation {
-    fn as_str(&self) -> &'static str {
-        match self {
-            RwLockOperation::Read => "read",
-            RwLockOperation::Write => "write",
-            RwLockOperation::TryRead => "try_read",
-            RwLockOperation::TryWrite => "try_write",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct MonitoredRwLock<T> {
-    lock: RwLock<T>,
-}
-
-impl<T> MonitoredRwLock<T> {
-    pub fn new(data: T) -> Self {
-        Self {
-            lock: RwLock::new(data),
-        }
-    }
-
-    pub async fn read(
-        &self,
-        name: RwLockName,
-        operation_type: RwLockOperation,
-    ) -> RwLockReadGuard<'_, T> {
-        let start = Instant::now();
-        let guard = self.lock.read().await;
-        let duration = start.elapsed().as_secs_f64();
-        RWLOCK_DELAY
-            .with_label_values(&[name.as_str(), operation_type.as_str()])
-            .observe(duration);
-        guard
-    }
-
-    pub async fn write(
-        &self,
-        name: RwLockName,
-        operation_type: RwLockOperation,
-    ) -> RwLockWriteGuard<'_, T> {
-        let start = Instant::now();
-        let guard = self.lock.write().await;
-        let duration = start.elapsed().as_secs_f64();
-        RWLOCK_DELAY
-            .with_label_values(&[name.as_str(), operation_type.as_str()])
-            .observe(duration);
-        guard
-    }
-
-    pub fn try_read(
-        &self,
-        name: RwLockName,
-        operation_type: RwLockOperation,
-    ) -> Result<RwLockReadGuard<'_, T>, TryLockError> {
-        let start = Instant::now();
-
-        match self.lock.try_read() {
-            Ok(guard) => {
-                let duration = start.elapsed().as_secs_f64();
-                RWLOCK_DELAY
-                    .with_label_values(&[name.as_str(), operation_type.as_str()])
-                    .observe(duration);
-                Ok(guard)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    pub fn try_write(
-        &self,
-        name: RwLockName,
-        operation_type: RwLockOperation,
-    ) -> Result<RwLockWriteGuard<'_, T>, TryLockError> {
-        let start = Instant::now();
-
-        match self.lock.try_write() {
-            Ok(guard) => {
-                let duration = start.elapsed().as_secs_f64();
-                RWLOCK_DELAY
-                    .with_label_values(&[name.as_str(), operation_type.as_str()])
-                    .observe(duration);
-                Ok(guard)
-            }
-            Err(err) => Err(err),
-        }
-    }
 }
 
 #[derive(Deserialize)]

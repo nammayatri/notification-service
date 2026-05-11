@@ -22,12 +22,15 @@ use crate::{
         external::{driver_quote_respond, internal_authentication},
         types::DriverRespondReq,
     },
-    redis::commands::{get_client_id, get_notification_stream_id, set_client_id},
+    redis::commands::{
+        clean_up_notification, get_client_id, get_notification_stream_id, set_client_id,
+    },
     tools::{
         callapi::CallApiError,
         error::AppError,
         prometheus::{
-            MEASURE_DURATION, NOTIFICATION_CLIENT_CONNECTION_DURATION, NOTIFICATION_LATENCY,
+            DELIVERED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_CLIENT_CONNECTION_DURATION,
+            NOTIFICATION_LATENCY,
         },
     },
     NotificationAck, NotificationPayload, QuoteRequest, QuoteResponse, QuoteResponseWithId,
@@ -38,9 +41,9 @@ use futures::Stream;
 use reqwest::Url;
 use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
-use std::{env::var, pin::Pin, str::FromStr};
+use std::{env::var, pin::Pin, str::FromStr, sync::Arc};
 use tokio::{
-    sync::mpsc::{self, UnboundedSender},
+    sync::mpsc::{self, Sender},
     time::{sleep, timeout, Instant},
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -59,18 +62,21 @@ type OptionalHeaders = (
 
 #[allow(clippy::type_complexity)]
 pub struct NotificationService {
-    read_notification_tx: UnboundedSender<(ClientId, SenderType, DateTime<Utc>)>,
+    read_notification_tx: Sender<(ClientId, SenderType, DateTime<Utc>)>,
+    clients_tx: Arc<ReaderMap>,
     app_state: AppState,
 }
 
 impl NotificationService {
     #[allow(clippy::type_complexity)]
     pub fn new(
-        read_notification_tx: UnboundedSender<(ClientId, SenderType, DateTime<Utc>)>,
+        read_notification_tx: Sender<(ClientId, SenderType, DateTime<Utc>)>,
+        clients_tx: Arc<ReaderMap>,
         app_state: AppState,
     ) -> Self {
         NotificationService {
             read_notification_tx,
+            clients_tx,
             app_state,
         }
     }
@@ -362,11 +368,14 @@ impl Notification for NotificationService {
         );
 
         let add_client_tx_start_time = Instant::now();
-        if let Err(err) = read_notification_tx.clone().send((
-            ClientId(client_id.to_owned()),
-            SenderType::ClientConnection((session_id.to_owned(), client_tx)),
-            Utc::now(),
-        )) {
+        if let Err(err) = read_notification_tx
+            .send((
+                ClientId(client_id.to_owned()),
+                SenderType::ClientConnection((session_id.to_owned(), client_tx)),
+                Utc::now(),
+            ))
+            .await
+        {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
                 client_id, err
@@ -382,11 +391,14 @@ impl Notification for NotificationService {
 
             info!("Client ({}) Timed Out", client_id_clone);
             notification_client_connection_duration!("TIMED_OUT", start_time);
-            if let Err(err) = read_notification_tx_clone.send((
-                ClientId(client_id_clone.to_owned()),
-                SenderType::ClientDisconnection(session_id),
-                Utc::now(),
-            )) {
+            if let Err(err) = read_notification_tx_clone
+                .send((
+                    ClientId(client_id_clone.to_owned()),
+                    SenderType::ClientDisconnection(session_id),
+                    Utc::now(),
+                ))
+                .await
+            {
                 error!(
                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
                     client_id_clone, err
@@ -445,19 +457,22 @@ impl Notification for NotificationService {
 
         let (client_tx, client_rx) = mpsc::channel(self.app_state.channel_buffer);
 
-        let (redis_pool, read_notification_tx, max_shards, request_timeout_seconds) = (
+        let (redis_pool, read_notification_tx, clients_tx_for_ack, request_timeout_seconds) = (
             self.app_state.redis_pool.clone(),
             self.read_notification_tx.clone(),
-            self.app_state.max_shards,
+            self.clients_tx.clone(),
             self.app_state.request_timeout_seconds,
         );
 
         let add_client_tx_start_time = Instant::now();
-        if let Err(err) = read_notification_tx.clone().send((
-            ClientId(client_id.to_owned()),
-            SenderType::ClientConnection((None, client_tx)),
-            Utc::now(),
-        )) {
+        if let Err(err) = read_notification_tx
+            .send((
+                ClientId(client_id.to_owned()),
+                SenderType::ClientConnection((None, client_tx)),
+                Utc::now(),
+            ))
+            .await
+        {
             error!(
                 "Failed to Send Data to Notification Reader for Client : {}, Error : {:?}",
                 client_id, err
@@ -498,25 +513,71 @@ impl Notification for NotificationService {
                                     error!("Error in getting Notification Stream Id : {:?}", err);
                                 }
                             }
-                            if let Err(err) = read_notification_tx_clone.send((
-                                ClientId(client_id_clone.to_owned()),
-                                SenderType::ClientAck((NotificationId(notification_ack.id), None)),
-                                Utc::now(),
-                            )) {
-                                error!(
-                                    "Failed to remove client's ({:?}) instance from Reader : {:?}",
-                                    client_id_clone, err
-                                );
+                            // Inline ACK handling: previously routed through
+                            // `read_notification_tx` → `client_reciever_looper`
+                            // (a single serial consumer for every event in the
+                            // pod). Now the DashMap is `Send + Sync` and the
+                            // ActiveNotification mutex is sync, so we can
+                            // settle the ACK right here without crossing a
+                            // channel. Removes the largest hot-path source of
+                            // serialisation in the control plane.
+                            let notification_id =
+                                NotificationId(notification_ack.id.clone());
+                            let (active_opt, shard_opt) = match clients_tx_for_ack
+                                .get(&ClientId(client_id_clone.clone()))
+                            {
+                                Some(entry) => {
+                                    let shard = entry.value().shard.clone();
+                                    let active = match &entry.value().sessions {
+                                        SessionMap::Single((_, active)) => Some(active.clone()),
+                                        SessionMap::Multi(sessions) => {
+                                            sessions.values().next().map(|(_, a)| a.clone())
+                                        }
+                                    };
+                                    (active, Some(shard))
+                                }
+                                None => (None, None),
+                            };
+
+                            let acked = active_opt.and_then(|active| {
+                                let mut guard = active.lock();
+                                guard.acknowledge(&notification_id)
+                            });
+
+                            if let (Some(acked), Some(shard)) = (acked, shard_opt) {
+                                DELIVERED_NOTIFICATIONS
+                                    .with_label_values(&[&acked.category])
+                                    .inc();
+                                let _ = clean_up_notification(
+                                    &redis_pool,
+                                    &client_id_clone,
+                                    &acked.stream_id.inner(),
+                                    &shard,
+                                )
+                                .await
+                                .map_err(|err| {
+                                    error!(
+                                        "[Notification Service Error] - Error in clean_up_notification : {}",
+                                        err
+                                    )
+                                });
+                            } else {
+                                DELIVERED_NOTIFICATIONS
+                                    .with_label_values(&["UNKNOWN"])
+                                    .inc();
                             }
                         }
                         Ok(None) => {
                             info!("Client ({}) Disconnected", client_id_clone);
                             notification_client_connection_duration!("DISCONNECTED", start_time);
-                            if let Err(err) = read_notification_tx_clone.send((
-                                ClientId(client_id_clone.to_owned()),
-                                SenderType::ClientDisconnection(None),
-                                Utc::now(),
-                            )) {
+                            if let Err(err) = read_notification_tx_clone
+                                .send((
+                                    ClientId(client_id_clone.to_owned()),
+                                    SenderType::ClientDisconnection(None),
+                                    Utc::now(),
+                                ))
+                                .await
+                            {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
                                     client_id_clone, err
@@ -527,11 +588,14 @@ impl Notification for NotificationService {
                         Err(err) => {
                             info!("Client ({}) Disconnected : {}", client_id_clone, err);
                             notification_client_connection_duration!("DISCONNECTED", start_time);
-                            if let Err(err) = read_notification_tx_clone.send((
-                                ClientId(client_id_clone.to_owned()),
-                                SenderType::ClientDisconnection(None),
-                                Utc::now(),
-                            )) {
+                            if let Err(err) = read_notification_tx_clone
+                                .send((
+                                    ClientId(client_id_clone.to_owned()),
+                                    SenderType::ClientDisconnection(None),
+                                    Utc::now(),
+                                ))
+                                .await
+                            {
                                 error!(
                                     "Failed to remove client's ({:?}) instance from Reader : {:?}",
                                     client_id_clone, err
@@ -549,11 +613,14 @@ impl Notification for NotificationService {
 
                 info!("Client ({}) Timed Out : {}", client_id_clone, err);
                 notification_client_connection_duration!("TIMED_OUT", start_time);
-                if let Err(err) = read_notification_tx_clone.send((
-                    ClientId(client_id_clone.to_owned()),
-                    SenderType::ClientDisconnection(None),
-                    Utc::now(),
-                )) {
+                if let Err(err) = read_notification_tx_clone
+                    .send((
+                        ClientId(client_id_clone.to_owned()),
+                        SenderType::ClientDisconnection(None),
+                        Utc::now(),
+                    ))
+                    .await
+                {
                     error!(
                         "Failed to remove client's ({:?}) instance from Reader : {:?}",
                         client_id_clone, err

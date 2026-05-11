@@ -99,17 +99,6 @@ pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
         .expect("Failed to register expired notifications metrics")
     });
 
-pub static RWLOCK_DELAY: once_cell::sync::Lazy<HistogramVec> = once_cell::sync::Lazy::new(|| {
-    register_histogram_vec!(
-        histogram_opts!(
-            "rwlock_delay",
-            "Time taken to acquire RwLock (contention delay)"
-        ),
-        &["name", "type"] // Dimensions: Lock Name & Operation Type
-    )
-    .expect("Failed to register RwLock latency metric")
-});
-
 #[macro_export]
 macro_rules! notification_client_connection_duration {
     ($status:expr, $start:expr) => {
@@ -227,11 +216,6 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(EXPIRED_NOTIFICATIONS.to_owned()))
         .expect("Failed to register expired notifications metrics");
-
-    prometheus
-        .registry
-        .register(Box::new(RWLOCK_DELAY.to_owned()))
-        .expect("Failed to register rwlock delay metric");
 
     prometheus
 }

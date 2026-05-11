@@ -1759,6 +1759,7 @@ dependencies = [
  "macros 0.1.0 (git+https://github.com/nammayatri/shared-kernel-rs?rev=c1536ca)",
  "once_cell",
  "package",
+ "parking_lot",
  "pin-project",
  "prometheus",
  "prost",
