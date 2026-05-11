@@ -9,7 +9,7 @@
 use anyhow::Result;
 use notification_service::server::run_server;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     // console_subscriber::init();
     run_server().await
