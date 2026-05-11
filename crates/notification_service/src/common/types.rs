@@ -52,37 +52,53 @@ pub struct Ttl(pub DateTime<Utc>);
 #[macros::impl_getter]
 pub struct StreamEntry(pub String);
 
-#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationMeta {
-    pub ttl: Ttl,
-    pub category: String,
-    pub stream_id: StreamEntry,
+    pub data: NotificationData,
+    pub sent_at: Option<DateTime<Utc>>,
     pub total_counted: bool,
     pub retry_counted: bool,
     pub expired_counted: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ExpiryReason {
+    NoConsumer,
+    Timeout,
+}
+
+impl ExpiryReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExpiryReason::NoConsumer => "no_consumer",
+            ExpiryReason::Timeout => "timeout",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AcknowledgedNotification {
     pub category: String,
     pub stream_id: StreamEntry,
+    pub sent_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 #[macros::impl_getter]
 pub struct ActiveNotification(pub FxHashMap<NotificationId, NotificationMeta>);
 
 impl ActiveNotification {
     pub fn update(&mut self, notifications: Vec<NotificationData>) {
         for notification in notifications {
-            self.0.entry(notification.id).or_insert(NotificationMeta {
-                ttl: notification.ttl,
-                category: notification.category,
-                stream_id: notification.stream_id,
-                total_counted: false,
-                retry_counted: false,
-                expired_counted: false,
-            });
+            self.0
+                .entry(notification.id.clone())
+                .or_insert(NotificationMeta {
+                    data: notification,
+                    sent_at: None,
+                    total_counted: false,
+                    retry_counted: false,
+                    expired_counted: false,
+                });
         }
     }
 
@@ -97,8 +113,9 @@ impl ActiveNotification {
         self.0
             .remove(notification_id)
             .map(|meta| AcknowledgedNotification {
-                category: meta.category,
-                stream_id: meta.stream_id,
+                category: meta.data.category,
+                stream_id: meta.data.stream_id,
+                sent_at: meta.sent_at,
             })
     }
 
@@ -108,9 +125,8 @@ impl ActiveNotification {
                 self.0.insert(
                     notification.id.clone(),
                     NotificationMeta {
-                        ttl: notification.ttl.clone(),
-                        category: notification.category.clone(),
-                        stream_id: notification.stream_id.clone(),
+                        data: notification.clone(),
+                        sent_at: None,
                         total_counted: true,
                         retry_counted: false,
                         expired_counted: false,
@@ -123,6 +139,12 @@ impl ActiveNotification {
                 true
             }
             Some(_) => false,
+        }
+    }
+
+    pub fn mark_sent(&mut self, notification_id: &NotificationId, now: DateTime<Utc>) {
+        if let Some(meta) = self.0.get_mut(notification_id) {
+            meta.sent_at = Some(now);
         }
     }
 
@@ -146,9 +168,30 @@ impl ActiveNotification {
         }
     }
 
+    pub fn try_claim_expired_with_reason(
+        &mut self,
+        notification_id: &NotificationId,
+    ) -> Option<ExpiryReason> {
+        match self.0.get_mut(notification_id) {
+            Some(meta) if !meta.expired_counted => {
+                meta.expired_counted = true;
+                Some(if meta.sent_at.is_some() {
+                    ExpiryReason::Timeout
+                } else {
+                    ExpiryReason::NoConsumer
+                })
+            }
+            _ => None,
+        }
+    }
+
     pub fn refresh(&mut self) {
         let now = Utc::now();
-        self.0.retain(|_, meta| meta.ttl.inner() >= now);
+        self.0.retain(|_, meta| meta.data.ttl.inner() >= now);
+    }
+
+    pub fn pending_redelivery(&self) -> Vec<NotificationData> {
+        self.0.values().map(|m| m.data.clone()).collect()
     }
 }
 
@@ -175,13 +218,10 @@ pub enum SessionMap {
     Multi(FxHashMap<SessionID, (ClientTx, Arc<Mutex<ActiveNotification>>)>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ClientEntry {
-    /// Pre-computed shard for this client. Set once at connect time using
-    /// `hash_uuid(client_id) % max_shards`. The shard is part of the Redis
-    /// stream key contract with the producer (`notification_client_key`),
-    /// so it must match what the producer computes for the same client id.
     pub shard: Shard,
+    pub last_read_id: Mutex<StreamEntry>,
     pub sessions: SessionMap,
 }
 

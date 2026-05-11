@@ -79,6 +79,14 @@ where
     Ok(result)
 }
 
+pub fn max_stream_id(a: &str, b: &str) -> String {
+    if is_stream_id_less_or_eq(a, b) {
+        b.to_string()
+    } else {
+        a.to_string()
+    }
+}
+
 #[macros::measure_duration]
 pub fn is_stream_id_less_or_eq(id1: &str, id2: &str) -> bool {
     // Split the stream IDs into timestamp and sequence parts
@@ -126,13 +134,14 @@ pub fn transform_notification_data_to_payload(
     }
 }
 
-#[allow(deprecated)]
 pub fn get_timestamp_from_stream_id(stream_id: &str) -> Timestamp {
+    // Redis stream IDs are `<ms>-<seq>`; preserve millisecond precision so
+    // latency samples don't carry a 0–1s noise floor.
     stream_id
         .split('-')
         .next()
         .and_then(|timestamp_part| timestamp_part.parse::<i64>().ok())
-        .map(|milliseconds| Utc.timestamp(milliseconds / 1000, 0))
+        .and_then(|milliseconds| Utc.timestamp_millis_opt(milliseconds).single())
         .map(Timestamp)
         .unwrap_or_else(|| Timestamp(Utc::now()))
 }

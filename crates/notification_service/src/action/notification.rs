@@ -10,9 +10,8 @@ use crate::{
     common::{
         types::*,
         utils::{
-            abs_diff_utc_as_sec, get_timestamp_from_stream_id,
-            log_quote_respond_api_error_with_status, log_quote_respond_api_result,
-            log_quote_respond_api_success,
+            abs_diff_utc_as_sec, log_quote_respond_api_error_with_status,
+            log_quote_respond_api_result, log_quote_respond_api_success,
         },
     },
     environment::AppState,
@@ -22,9 +21,7 @@ use crate::{
         external::{driver_quote_respond, internal_authentication},
         types::DriverRespondReq,
     },
-    redis::commands::{
-        clean_up_notification, get_client_id, get_notification_stream_id, set_client_id,
-    },
+    redis::commands::{clean_up_notification, get_client_id, set_client_id},
     tools::{
         callapi::CallApiError,
         error::AppError,
@@ -490,37 +487,9 @@ impl Notification for NotificationService {
                 loop {
                     match stream.message().await {
                         Ok(Some(notification_ack)) => {
-                            // This is during the initial connection
                             if notification_ack.id.is_empty() {
                                 continue;
                             }
-                            // Acknowledgment for sent notification from the client
-                            match get_notification_stream_id(&redis_pool, &notification_ack.id)
-                                .await
-                            {
-                                Ok(Some(StreamEntry(notification_stream_id))) => {
-                                    notification_latency!(
-                                        get_timestamp_from_stream_id(&notification_stream_id)
-                                            .inner(),
-                                        "ACK",
-                                        "client"
-                                    );
-                                }
-                                Ok(None) => {
-                                    error!("Notification Stream Id Not Found.");
-                                }
-                                Err(err) => {
-                                    error!("Error in getting Notification Stream Id : {:?}", err);
-                                }
-                            }
-                            // Inline ACK handling: previously routed through
-                            // `read_notification_tx` → `client_reciever_looper`
-                            // (a single serial consumer for every event in the
-                            // pod). Now the DashMap is `Send + Sync` and the
-                            // ActiveNotification mutex is sync, so we can
-                            // settle the ACK right here without crossing a
-                            // channel. Removes the largest hot-path source of
-                            // serialisation in the control plane.
                             let notification_id =
                                 NotificationId(notification_ack.id.clone());
                             let (active_opt, shard_opt) = match clients_tx_for_ack
@@ -545,6 +514,9 @@ impl Notification for NotificationService {
                             });
 
                             if let (Some(acked), Some(shard)) = (acked, shard_opt) {
+                                if let Some(sent_at) = acked.sent_at {
+                                    notification_latency!(sent_at, "ACK", "client");
+                                }
                                 DELIVERED_NOTIFICATIONS
                                     .with_label_values(&[&acked.category])
                                     .inc();

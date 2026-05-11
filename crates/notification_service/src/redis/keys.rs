@@ -15,10 +15,6 @@ pub fn client_details_key(token: &str) -> String {
     format!("NS:{token}")
 }
 
-pub fn notification_stream_key(notification_id: &str) -> String {
-    format!("N-S:{}", notification_id)
-}
-
 pub fn pubsub_channel_key() -> &'static str {
     "active-notification"
 }

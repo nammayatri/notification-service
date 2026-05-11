@@ -44,7 +44,14 @@ pub static INCOMING_API: once_cell::sync::Lazy<HistogramVec> = once_cell::sync::
 pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
     once_cell::sync::Lazy::new(|| {
         register_histogram_vec!(
-            opts!("notification_duration_seconds", "Notification Latency").into(),
+            histogram_opts!(
+                "notification_duration_seconds",
+                "Notification Latency",
+                vec![
+                    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0,
+                    60.0, 120.0, 300.0
+                ]
+            ),
             &["version", "ack", "source"]
         )
         .expect("Failed to register notifiction latency metrics")
@@ -94,7 +101,7 @@ pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
         register_int_counter_vec!(
             "expired_notifications",
             "Expired Notifications",
-            &["category"]
+            &["category", "reason"]
         )
         .expect("Failed to register expired notifications metrics")
     });

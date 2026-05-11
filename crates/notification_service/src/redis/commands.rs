@@ -8,19 +8,18 @@
 
 use super::{keys::*, types::NotificationData};
 use crate::{
-    common::{
-        types::*,
-        utils::{abs_diff_utc_as_sec, decode_stream},
-    },
+    common::{types::*, utils::decode_stream},
     tools::prometheus::MEASURE_DURATION,
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use shared::measure_latency_duration;
-use shared::redis::{error::RedisError, types::RedisConnectionPool};
-use std::cmp::{max, min};
+use shared::redis::types::RedisConnectionPool;
 use tracing::*;
+
+static CLIENT_ID_FROM_STREAM_KEY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"N([0-9a-fA-F-]+)\{").expect("client-id regex"));
 
 #[macros::measure_duration]
 pub async fn set_client_id(
@@ -51,11 +50,12 @@ pub async fn read_client_notification(
     redis_pool: &RedisConnectionPool,
     client_id: &ClientId,
     Shard(shard): &Shard,
+    start_id: &StreamEntry,
 ) -> Result<Vec<NotificationData>> {
     let notifications = redis_pool
         .xread(
             vec![notification_client_key(&client_id.inner(), shard)],
-            vec![StreamEntry::default().inner()],
+            vec![start_id.inner()],
             None,
         )
         .await?;
@@ -69,20 +69,17 @@ pub async fn read_client_notification(
 #[macros::measure_duration]
 pub async fn read_client_notifications(
     redis_pool: &RedisConnectionPool,
-    client_ids: Vec<ClientId>,
+    clients_with_cursors: Vec<(ClientId, StreamEntry)>,
     Shard(shard): &Shard,
 ) -> Result<Vec<(ClientId, Vec<NotificationData>)>> {
-    if client_ids.is_empty() {
+    if clients_with_cursors.is_empty() {
         return Ok(Vec::default());
     }
 
-    let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) = client_ids
+    let (client_stream_keys, client_stream_ids): (Vec<String>, Vec<String>) = clients_with_cursors
         .into_iter()
-        .map(|ClientId(client_id)| {
-            (
-                notification_client_key(&client_id, shard),
-                StreamEntry::default().inner(),
-            )
+        .map(|(ClientId(client_id), start_id)| {
+            (notification_client_key(&client_id, shard), start_id.inner())
         })
         .unzip();
 
@@ -95,17 +92,9 @@ pub async fn read_client_notifications(
         .await?;
     let notifications = decode_stream::<NotificationData>(notifications)?;
 
-    let regex = match Regex::new(r"N([0-9a-fA-F-]+)\{") {
-        Ok(regex) => regex,
-        Err(err) => {
-            error!("Regex Parsing Failed: {}", err);
-            return Err(err.into());
-        }
-    };
-
     let mut result = Vec::default();
     for (key, val) in notifications {
-        match regex
+        match CLIENT_ID_FROM_STREAM_KEY
             .captures(&key)
             .and_then(|captures| captures.get(1).map(|m| m.as_str()))
         {
@@ -118,35 +107,6 @@ pub async fn read_client_notifications(
     }
 
     Ok(result)
-}
-
-#[macros::measure_duration]
-pub async fn set_notification_stream_id(
-    redis_pool: &RedisConnectionPool,
-    notification_id: &str,
-    notification_stream_id: &str,
-    notification_ttl: DateTime<Utc>,
-) -> Result<(), RedisError> {
-    let now = Utc::now();
-    redis_pool
-        .set_key_as_str(
-            &notification_stream_key(notification_id),
-            notification_stream_id,
-            abs_diff_utc_as_sec(min(now, notification_ttl), max(now, notification_ttl)) as u32 + 60, // Extra 60 seconds buffer
-        )
-        .await?;
-    Ok(())
-}
-
-#[macros::measure_duration]
-pub async fn get_notification_stream_id(
-    redis_pool: &RedisConnectionPool,
-    notification_id: &str,
-) -> Result<Option<StreamEntry>> {
-    Ok(redis_pool
-        .get_key_as_str(&notification_stream_key(notification_id))
-        .await?
-        .map(StreamEntry))
 }
 
 #[macros::measure_duration]

@@ -36,13 +36,6 @@ use tokio::{
 use tonic::transport::Server;
 use tracing::*;
 
-/// Bounded queue depth for the control-plane mpsc (connect + disconnect events).
-/// ACKs no longer flow through this channel — they're handled inline in the gRPC
-/// stream task via the shared `ReaderMap` DashMap. So steady-state traffic here
-/// is only connect/disconnect, which is orders of magnitude lower than ACK
-/// volume. 8 192 gives generous headroom even under reconnect storms; the
-/// previous `unbounded_channel` was an OOM hazard with no observability into
-/// queue depth.
 const CONTROL_PLANE_CHANNEL_BUFFER: usize = 8_192;
 
 pub async fn run_server() -> Result<()> {
@@ -68,12 +61,6 @@ pub async fn run_server() -> Result<()> {
         Receiver<(ClientId, SenderType, DateTime<Utc>)>,
     ) = mpsc::channel(CONTROL_PLANE_CHANNEL_BUFFER);
 
-    // One shared DashMap for every connected client on this pod. Replaces the
-    // 128 × MonitoredRwLock<FxHashMap> shard array. DashMap is internally
-    // sharded with per-bucket sync locks held for microseconds. The shard
-    // count argument here is DashMap's *internal* hash partition for lock
-    // granularity — completely independent of `max_shards`, which remains a
-    // contract with the producer for Redis stream-key construction.
     let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_capacity_and_hasher_and_shard_amount(
         16_384,
         FxBuildHasher::default(),

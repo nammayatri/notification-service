@@ -11,16 +11,13 @@ use crate::{
     common::{
         types::*,
         utils::{
-            abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid,
+            abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid, max_stream_id,
             transform_notification_data_to_payload,
         },
     },
     notification_latency,
     redis::{
-        commands::{
-            clean_up_notification, read_client_notification, read_client_notifications,
-            set_notification_stream_id,
-        },
+        commands::{clean_up_notification, read_client_notification, read_client_notifications},
         keys::*,
         types::NotificationData,
     },
@@ -57,23 +54,8 @@ async fn client_tx_send(client_tx: &ClientTx, notification: &NotificationData) -
 async fn send_notification(
     client_tx: &ClientTx,
     notification: NotificationData,
-    redis_pool: &RedisConnectionPool,
     source: &'static str,
 ) -> Result<()> {
-    let _ = set_notification_stream_id(
-        redis_pool,
-        &notification.id.inner(),
-        &notification.stream_id.inner(),
-        notification.ttl.inner(),
-    )
-    .await
-    .map_err(|err| {
-        error!(
-            "[Notification Service Error] - Error in set_notification_stream_id : {:?}",
-            err
-        )
-    });
-
     client_tx_send(client_tx, &notification).await?;
 
     notification_latency!(
@@ -115,9 +97,6 @@ async fn handle_client_disconnection_or_failure(
 ) {
     let start = tokio::time::Instant::now();
 
-    // For Single sessions, remove the whole entry. For Multi, remove the named
-    // session and drop the entry if no sessions remain. Hold the mutable bucket
-    // guard for the smallest possible window — no `.await` while held.
     let should_remove = if let Some(mut entry) = clients_tx.get_mut(client_id) {
         match &mut entry.value_mut().sessions {
             SessionMap::Single(_) => true,
@@ -161,10 +140,6 @@ async fn client_reciever(
             info!("[Client Connected] : {:?}", client_id);
             CONNECTED_CLIENTS.inc();
 
-            // Compute shard ONCE at connect time. Every later op reads
-            // `entry.shard` instead of recomputing `hash_uuid(client_id) % max_shards`.
-            // This is the only place in the code (other than pubsub message decode)
-            // that calls hash_uuid for an in-memory routing decision.
             let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
 
             let start = tokio::time::Instant::now();
@@ -172,18 +147,16 @@ async fn client_reciever(
             let active_notification = Arc::new(Mutex::new(ActiveNotification::default()));
             let client_tx_for_catchup = client_tx.clone();
 
-            // Hold the DashMap bucket guard for a tiny synchronous critical section.
-            // No `.await` inside this block — that's the DashMap deadlock invariant.
             {
                 let mut entry =
                     clients_tx
                         .entry(client_id.clone())
                         .or_insert_with(|| ClientEntry {
                             shard: shard.clone(),
+                            last_read_id: Mutex::new(StreamEntry::default()),
                             sessions: if session_id.is_some() {
                                 SessionMap::Multi(FxHashMap::default())
                             } else {
-                                // Placeholder; will be overwritten just below.
                                 SessionMap::Single((client_tx.clone(), active_notification.clone()))
                             },
                         });
@@ -193,12 +166,9 @@ async fn client_reciever(
                         sessions.insert(session_id, (client_tx, active_notification));
                     }
                     (sessions @ SessionMap::Multi(_), None) => {
-                        // Existed as Multi but the new connection is single-session.
                         *sessions = SessionMap::Single((client_tx, active_notification));
                     }
                     (sessions @ SessionMap::Single(_), Some(session_id)) => {
-                        // Existed as Single but a multi-session connection arrived;
-                        // promote to Multi and keep the new session.
                         let mut map = FxHashMap::default();
                         map.insert(session_id, (client_tx, active_notification));
                         *sessions = SessionMap::Multi(map);
@@ -259,169 +229,174 @@ async fn client_reciever_looper(
     error!("[Notification Service Error] - read_notification_rx closed");
 }
 
-// Retry-sweep concurrency budget.
-//
-// `retry_notifications` fans out at three nesting levels — clients within a
-// shard, notifications within a client, sessions within a notification — each
-// capped by one of the constants below. Worst-case in-flight work per shard is
-// the product: 256 * 32 * 8 = 65,536 concurrent ops. The caps exist so a hot
-// shard with e.g. 20k clients * 50 notifications * 5 sessions doesn't spawn
-// ~5M tasks at once.
 const RETRY_PER_CLIENT_CONCURRENCY: usize = 256;
 const RETRY_PER_NOTIFICATION_CONCURRENCY: usize = 32;
 const RETRY_PER_TARGET_CONCURRENCY: usize = 8;
 
-/// Snapshot a client's `Arc<Mutex<ActiveNotification>>`s without holding a
-/// DashMap guard across an `.await`. Cloning the `Arc` is cheap; the caller
-/// then locks the mutex synchronously when it needs to mutate.
-fn snapshot_active_notifications(
-    clients_tx: &Arc<ReaderMap>,
-    client_id: &ClientId,
-) -> Vec<Arc<Mutex<ActiveNotification>>> {
-    match clients_tx.get(client_id) {
-        Some(entry) => match &entry.value().sessions {
-            SessionMap::Single((_, active)) => vec![active.clone()],
-            SessionMap::Multi(client) => client.values().map(|(_, a)| a.clone()).collect(),
-        },
-        None => vec![],
+fn ingest_backfill(clients_tx: &Arc<ReaderMap>, client_id: &ClientId, notifs: &[NotificationData]) {
+    if notifs.is_empty() {
+        return;
     }
-}
-
-/// Like `snapshot_active_notifications` but also returns target client_txs.
-fn snapshot_client(
-    clients_tx: &Arc<ReaderMap>,
-    client_id: &ClientId,
-) -> (Option<Arc<Mutex<ActiveNotification>>>, Vec<ClientTx>) {
-    match clients_tx.get(client_id) {
-        Some(entry) => match &entry.value().sessions {
-            SessionMap::Single((client_tx, active)) => {
-                (Some(active.clone()), vec![client_tx.clone()])
-            }
-            SessionMap::Multi(client) => {
-                let active = client.values().next().map(|(_, a)| a.clone());
-                let txs = client.values().map(|(tx, _)| tx.clone()).collect();
-                (active, txs)
-            }
-        },
-        None => {
-            warn!(
-                "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-                client_id
-            );
-            (None, vec![])
-        }
-    }
-}
-
-async fn refresh_active_for_empty_client(clients_tx: &Arc<ReaderMap>, client_id: &ClientId) {
-    let actives = snapshot_active_notifications(clients_tx, client_id);
+    advance_cursor(clients_tx, client_id, notifs);
+    let (_, actives) = snapshot_session_actives(clients_tx, client_id);
     if actives.is_empty() {
-        warn!(
-            "Client ({:?}) entry does not exist, client got disconnected intermittently.",
-            client_id
-        );
         return;
     }
     for active in actives {
-        active.lock().refresh();
+        let mut guard = active.lock();
+        for n in notifs {
+            if guard.try_claim_total(n) {
+                TOTAL_NOTIFICATIONS.with_label_values(&[&n.category]).inc();
+            }
+        }
+        guard.update(notifs.to_vec());
     }
 }
 
-async fn process_notification(
-    redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<ReaderMap>,
-    shard: Shard,
-    client_id: ClientId,
-    notification: NotificationData,
+#[macros::measure_duration]
+async fn backfill_new_entries(
+    redis_pool: &Arc<RedisConnectionPool>,
+    clients_tx: &Arc<ReaderMap>,
+    max_shards: u64,
 ) {
-    let (active, target_client_txs) = snapshot_client(&clients_tx, &client_id);
-
-    let (count_total, count_retry, count_expired) = if let Some(active) = active.as_ref() {
-        let mut guard = active.lock();
-        let ct = guard.try_claim_total(&notification);
-        let cr = if !ct {
-            guard.try_claim_retry(&notification.id)
-        } else {
-            false
-        };
-        let ce = if notification.ttl.inner() < Utc::now() {
-            guard.try_claim_expired(&notification.id)
-        } else {
-            false
-        };
-        (ct, cr, ce)
-    } else {
-        (false, false, false)
-    };
-
-    if count_total {
-        TOTAL_NOTIFICATIONS
-            .with_label_values(&[&notification.category])
-            .inc();
-    }
-    if count_retry {
-        RETRIED_NOTIFICATIONS
-            .with_label_values(&[&notification.category])
-            .inc();
+    let mut by_shard: Vec<Vec<(ClientId, StreamEntry)>> =
+        (0..max_shards as usize).map(|_| Vec::new()).collect();
+    for entry in clients_tx.iter() {
+        let shard_idx = entry.value().shard.inner() as usize;
+        let cursor = entry.value().last_read_id.lock().clone();
+        by_shard[shard_idx].push((entry.key().clone(), cursor));
     }
 
-    if notification.ttl.inner() < Utc::now() {
-        if count_expired {
-            EXPIRED_NOTIFICATIONS
-                .with_label_values(&[&notification.category])
-                .inc();
-        }
-        clear_expired_notification(
-            &redis_pool,
-            &shard,
-            &client_id.inner(),
-            &notification.stream_id,
-        )
-        .await;
-        return;
-    }
-
-    if target_client_txs.is_empty() {
-        return;
-    }
-
-    let notification = Arc::new(notification);
-    stream::iter(target_client_txs.into_iter())
-        .for_each_concurrent(RETRY_PER_TARGET_CONCURRENCY, |client_tx| {
+    let tasks: Vec<_> = by_shard
+        .into_iter()
+        .enumerate()
+        .map(|(shard_idx, items)| {
+            let shard = Shard(shard_idx as u64);
             let redis_pool = redis_pool.clone();
-            let notification = notification.clone();
+            let clients_tx = clients_tx.clone();
             async move {
-                if let Err(err) =
-                    send_notification(&client_tx, (*notification).clone(), &redis_pool, "retry")
-                        .await
-                {
-                    warn!("[Send Failed] : {}", err);
+                if items.is_empty() {
+                    return;
+                }
+                match read_client_notifications(&redis_pool, items, &shard).await {
+                    Ok(results) => {
+                        for (client_id, notifs) in results {
+                            ingest_backfill(&clients_tx, &client_id, &notifs);
+                        }
+                    }
+                    Err(err) => error!(
+                        "[Notification Service Error] - read_client_notifications : {}",
+                        err
+                    ),
                 }
             }
         })
-        .await;
+        .collect();
+    join_all(tasks).await;
 }
 
-async fn process_client_in_retry(
-    redis_pool: Arc<RedisConnectionPool>,
-    clients_tx: Arc<ReaderMap>,
-    shard: Shard,
+struct PendingClientWork {
     client_id: ClientId,
-    notifications: Vec<NotificationData>,
+    shard: Shard,
+    target_client_txs: Vec<ClientTx>,
+    active: Arc<Mutex<ActiveNotification>>,
+}
+
+#[macros::measure_duration]
+async fn retry_pending_in_memory(
+    redis_pool: &Arc<RedisConnectionPool>,
+    clients_tx: &Arc<ReaderMap>,
 ) {
-    if notifications.is_empty() {
-        refresh_active_for_empty_client(&clients_tx, &client_id).await;
-        return;
+    let mut work: Vec<PendingClientWork> = Vec::new();
+    for entry in clients_tx.iter() {
+        let shard = entry.value().shard.clone();
+        let client_id = entry.key().clone();
+        match &entry.value().sessions {
+            SessionMap::Single((tx, active)) => work.push(PendingClientWork {
+                client_id,
+                shard,
+                target_client_txs: vec![tx.clone()],
+                active: active.clone(),
+            }),
+            SessionMap::Multi(sessions) => {
+                if let Some((_, (_, primary_active))) = sessions.iter().next() {
+                    let txs: Vec<ClientTx> = sessions.values().map(|(tx, _)| tx.clone()).collect();
+                    work.push(PendingClientWork {
+                        client_id,
+                        shard,
+                        target_client_txs: txs,
+                        active: primary_active.clone(),
+                    });
+                }
+            }
+        }
     }
 
-    stream::iter(notifications.into_iter())
-        .for_each_concurrent(RETRY_PER_NOTIFICATION_CONCURRENCY, |notification| {
+    stream::iter(work.into_iter())
+        .for_each_concurrent(RETRY_PER_CLIENT_CONCURRENCY, |w| {
             let redis_pool = redis_pool.clone();
-            let clients_tx = clients_tx.clone();
-            let shard = shard.clone();
-            let client_id = client_id.clone();
             async move {
-                process_notification(redis_pool, clients_tx, shard, client_id, notification).await;
+                let pending = w.active.lock().pending_redelivery();
+                if pending.is_empty() {
+                    return;
+                }
+                stream::iter(pending.into_iter())
+                    .for_each_concurrent(RETRY_PER_NOTIFICATION_CONCURRENCY, |notification| {
+                        let redis_pool = redis_pool.clone();
+                        let active = w.active.clone();
+                        let txs = w.target_client_txs.clone();
+                        let client_id = w.client_id.clone();
+                        let shard = w.shard.clone();
+                        async move {
+                            if notification.ttl.inner() < Utc::now() {
+                                let reason = active
+                                    .lock()
+                                    .try_claim_expired_with_reason(&notification.id);
+                                if let Some(reason) = reason {
+                                    EXPIRED_NOTIFICATIONS
+                                        .with_label_values(&[
+                                            &notification.category,
+                                            reason.as_str(),
+                                        ])
+                                        .inc();
+                                }
+                                clear_expired_notification(
+                                    &redis_pool,
+                                    &shard,
+                                    &client_id.inner(),
+                                    &notification.stream_id,
+                                )
+                                .await;
+                                active.lock().acknowledge(&notification.id);
+                                return;
+                            }
+
+                            if active.lock().try_claim_retry(&notification.id) {
+                                RETRIED_NOTIFICATIONS
+                                    .with_label_values(&[&notification.category])
+                                    .inc();
+                            }
+
+                            stream::iter(txs.into_iter())
+                                .for_each_concurrent(RETRY_PER_TARGET_CONCURRENCY, |client_tx| {
+                                    let active = active.clone();
+                                    let notification = notification.clone();
+                                    let notification_id = notification.id.clone();
+                                    async move {
+                                        match send_notification(&client_tx, notification, "retry")
+                                            .await
+                                        {
+                                            Ok(()) => active
+                                                .lock()
+                                                .mark_sent(&notification_id, Utc::now()),
+                                            Err(err) => warn!("[Send Failed] : {}", err),
+                                        }
+                                    }
+                                })
+                                .await;
+                        }
+                    })
+                    .await;
             }
         })
         .await;
@@ -432,87 +407,10 @@ async fn retry_notifications(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<ReaderMap>,
     max_shards: u64,
-    read_all_connected_client_notifications: bool,
+    _read_all_connected_client_notifications: bool,
 ) {
-    // Step 1: one pass over the DashMap, NO `.await` held, grouping client_ids
-    // by their cached Redis shard. This preserves today's 128-batched-XREAD
-    // pattern: read_client_notifications is invoked once per shard, carrying
-    // up to N/max_shards client stream keys per call.
-    let mut by_shard: Vec<Vec<ClientId>> = (0..max_shards as usize).map(|_| Vec::new()).collect();
-
-    for entry in clients_tx.iter() {
-        let client_id = entry.key();
-        let shard_idx = entry.value().shard.inner() as usize;
-
-        if read_all_connected_client_notifications {
-            by_shard[shard_idx].push(client_id.clone());
-            continue;
-        }
-
-        // Event-driven mode: only sweep clients whose ActiveNotification map
-        // has entries (i.e., notifications that haven't been ACKed yet).
-        // `try_lock` because we don't want a sweep to block on a writer.
-        let has_active = match &entry.value().sessions {
-            SessionMap::Single((_, active)) => {
-                active.try_lock().map(|g| g.count() > 0).unwrap_or(false)
-            }
-            SessionMap::Multi(client) => client
-                .values()
-                .any(|(_, active)| active.try_lock().map(|g| g.count() > 0).unwrap_or(false)),
-        };
-        if has_active {
-            by_shard[shard_idx].push(client_id.clone());
-        }
-    }
-    // All DashMap guards dropped here, before any `.await`.
-
-    // Step 2: same 128-task `join_all` as today, each issuing one
-    // read_client_notifications call with that shard's client_ids.
-    let tasks: Vec<_> = by_shard
-        .into_iter()
-        .enumerate()
-        .map(|(shard_idx, client_ids)| {
-            let shard = Shard(shard_idx as u64);
-            let redis_pool = redis_pool.clone();
-            let clients_tx = clients_tx.clone();
-            async move {
-                if client_ids.is_empty() {
-                    return;
-                }
-                let notifications =
-                    read_client_notifications(&redis_pool, client_ids, &shard).await;
-
-                match notifications {
-                    Ok(notifications) => {
-                        stream::iter(notifications.into_iter())
-                            .for_each_concurrent(
-                                RETRY_PER_CLIENT_CONCURRENCY,
-                                |(client_id, notifs)| {
-                                    let redis_pool = redis_pool.clone();
-                                    let clients_tx = clients_tx.clone();
-                                    let shard = shard.clone();
-                                    async move {
-                                        process_client_in_retry(
-                                            redis_pool, clients_tx, shard, client_id, notifs,
-                                        )
-                                        .await;
-                                    }
-                                },
-                            )
-                            .await;
-                    }
-                    Err(err) => {
-                        error!(
-                            "[Notification Service Error] - read_client_notifications : {}",
-                            err
-                        );
-                    }
-                }
-            }
-        })
-        .collect();
-
-    join_all(tasks).await;
+    backfill_new_entries(&redis_pool, &clients_tx, max_shards).await;
+    retry_pending_in_memory(&redis_pool, &clients_tx).await;
 }
 
 async fn retry_notifications_looper(
@@ -534,20 +432,15 @@ async fn retry_notifications_looper(
     }
 }
 
-#[macros::measure_duration]
-async fn active_notification_dispatch(
-    redis_pool: &RedisConnectionPool,
+#[allow(clippy::type_complexity)]
+fn snapshot_session_actives(
     clients_tx: &Arc<ReaderMap>,
     client_id: &ClientId,
-    shard: &Shard,
-) -> Option<(Vec<NotificationData>, Arc<Mutex<ActiveNotification>>)> {
-    let notifications = read_client_notification(redis_pool, client_id, shard)
-        .await
-        .ok()?;
-
-    // Snapshot all session-actives, then mutate them with the sync mutex.
-    // No DashMap guard held across `.await`.
-    let (primary_active, all_actives) = match clients_tx.get(client_id) {
+) -> (
+    Option<Arc<Mutex<ActiveNotification>>>,
+    Vec<Arc<Mutex<ActiveNotification>>>,
+) {
+    match clients_tx.get(client_id) {
         Some(entry) => match &entry.value().sessions {
             SessionMap::Single((_, active)) => (Some(active.clone()), vec![active.clone()]),
             SessionMap::Multi(client) => {
@@ -556,14 +449,55 @@ async fn active_notification_dispatch(
                 (primary, actives)
             }
         },
-        None => {
-            error!(
-                "[Notification Service Error] - ClientId {:?} not found here.",
-                client_id
-            );
-            return None;
-        }
-    };
+        None => (None, vec![]),
+    }
+}
+
+fn advance_cursor(clients_tx: &Arc<ReaderMap>, client_id: &ClientId, notifs: &[NotificationData]) {
+    if notifs.is_empty() {
+        return;
+    }
+    let max_in_batch = notifs
+        .iter()
+        .map(|n| n.stream_id.inner())
+        .reduce(|a, b| max_stream_id(&a, &b))
+        .unwrap_or_default();
+    if let Some(entry) = clients_tx.get(client_id) {
+        let mut cursor = entry.value().last_read_id.lock();
+        let advanced = max_stream_id(&cursor.inner(), &max_in_batch);
+        *cursor = StreamEntry(advanced);
+    }
+}
+
+fn read_cursor(clients_tx: &Arc<ReaderMap>, client_id: &ClientId) -> StreamEntry {
+    clients_tx
+        .get(client_id)
+        .map(|entry| entry.value().last_read_id.lock().clone())
+        .unwrap_or_default()
+}
+
+#[macros::measure_duration]
+async fn active_notification_dispatch(
+    redis_pool: &RedisConnectionPool,
+    clients_tx: &Arc<ReaderMap>,
+    client_id: &ClientId,
+    shard: &Shard,
+) -> Option<(Vec<NotificationData>, Arc<Mutex<ActiveNotification>>)> {
+    let cursor = read_cursor(clients_tx, client_id);
+    let notifications = read_client_notification(redis_pool, client_id, shard, &cursor)
+        .await
+        .ok()?;
+
+    let (primary_active, all_actives) = snapshot_session_actives(clients_tx, client_id);
+    if primary_active.is_none() {
+        error!(
+            "[Notification Service Error] - ClientId {:?} not found here.",
+            client_id
+        );
+        return None;
+    }
+
+    advance_cursor(clients_tx, client_id, &notifications);
 
     for active in all_actives {
         active.lock().update(notifications.to_owned());
@@ -587,15 +521,15 @@ async fn dispatch_and_send_notifications(
     };
 
     for notification in notifications {
-        let (count_total, count_expired) = {
+        let (count_total, expiry_reason) = {
             let mut guard = active.lock();
             let ct = guard.try_claim_total(&notification);
-            let ce = if notification.ttl.inner() < Utc::now() {
-                guard.try_claim_expired(&notification.id)
+            let reason = if notification.ttl.inner() < Utc::now() {
+                guard.try_claim_expired_with_reason(&notification.id)
             } else {
-                false
+                None
             };
-            (ct, ce)
+            (ct, reason)
         };
 
         if count_total {
@@ -605,9 +539,9 @@ async fn dispatch_and_send_notifications(
         }
 
         if notification.ttl.inner() < Utc::now() {
-            if count_expired {
+            if let Some(reason) = expiry_reason {
                 EXPIRED_NOTIFICATIONS
-                    .with_label_values(&[&notification.category])
+                    .with_label_values(&[&notification.category, reason.as_str()])
                     .inc();
             }
             clear_expired_notification(
@@ -619,10 +553,11 @@ async fn dispatch_and_send_notifications(
             .await;
         } else {
             for client_tx in target_client_txs {
-                if let Err(err) =
-                    send_notification(client_tx, notification.to_owned(), redis_pool, source).await
-                {
-                    warn!("[Send Failed] : {}", err);
+                match send_notification(client_tx, notification.to_owned(), source).await {
+                    Ok(()) => {
+                        active.lock().mark_sent(&notification.id, Utc::now());
+                    }
+                    Err(err) => warn!("[Send Failed] : {}", err),
                 }
             }
         }
@@ -648,8 +583,6 @@ async fn active_notification(
 
         let client_id = ClientId(stream_id);
 
-        // Read the cached shard from the DashMap entry instead of recomputing
-        // hash_uuid + modulo. Snapshot client_txs in the same lookup.
         let (shard_opt, all_clients_tx) = match clients_tx.get(&client_id) {
             Some(entry) => {
                 let shard = entry.value().shard.clone();
@@ -681,7 +614,7 @@ async fn active_notification(
                 &client_id,
                 &shard,
                 &all_clients_tx,
-                "pubsub",
+                "pubsub_fresh",
             )
             .await;
         } else {
