@@ -124,3 +124,18 @@ pub async fn clean_up_notification(
         .await?;
     Ok(())
 }
+
+#[macros::measure_duration]
+pub async fn clean_up_notifications_batch(
+    redis_pool: &RedisConnectionPool,
+    shard: u64,
+    per_client: Vec<(String, Vec<String>)>,
+) -> Result<()> {
+    let items: Vec<(String, Vec<String>)> = per_client
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .map(|(client_id, ids)| (notification_client_key(&client_id, &shard), ids))
+        .collect();
+    redis_pool.xdel_pipelined(items).await?;
+    Ok(())
+}

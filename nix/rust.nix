@@ -17,6 +17,7 @@
           (with pkgs.darwin.apple_sdk.frameworks; [
             Security
             SystemConfiguration
+            CoreServices
           ]) ++ [
           pkgs.libiconv
           pkgs.openssl

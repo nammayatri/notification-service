@@ -41,6 +41,7 @@ let tokenOriginInternalAuthMap =
     }
 
 in {
+    driver_api_base_url = "http://127.0.0.1:8016",
     grpc_port = 50051,
     http_server_port = 9091,
     internal_auth_cfg = tokenOriginInternalAuthMap,
@@ -50,5 +51,6 @@ in {
     channel_buffer = 100000,
     request_timeout_seconds = 60,
     retry_delay_millis = 1000,
+    expired_cleanup_delay_millis = 500,
     read_all_connected_client_notifications = True
 }

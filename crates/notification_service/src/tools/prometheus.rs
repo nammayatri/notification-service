@@ -106,6 +106,16 @@ pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
         .expect("Failed to register expired notifications metrics")
     });
 
+pub static CLEANUP_PUSH_SKIPPED: once_cell::sync::Lazy<IntCounterVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_counter_vec!(
+            "cleanup_push_skipped",
+            "Expired-cleanup queue push skipped due to lock contention",
+            &["origin"]
+        )
+        .expect("Failed to register cleanup_push_skipped metrics")
+    });
+
 #[macro_export]
 macro_rules! notification_client_connection_duration {
     ($status:expr, $start:expr) => {
@@ -223,6 +233,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(EXPIRED_NOTIFICATIONS.to_owned()))
         .expect("Failed to register expired notifications metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(CLEANUP_PUSH_SKIPPED.to_owned()))
+        .expect("Failed to register cleanup_push_skipped metrics");
 
     prometheus
 }

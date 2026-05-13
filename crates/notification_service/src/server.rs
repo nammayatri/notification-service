@@ -89,6 +89,7 @@ pub async fn run_server() -> Result<()> {
         app_state.redis_pool.clone(),
         clients_tx.clone(),
         app_state.retry_delay_millis,
+        app_state.expired_cleanup_delay_millis,
         app_state.max_shards,
         read_all_connected_client_notifications,
     );
