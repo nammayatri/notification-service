@@ -10,7 +10,7 @@ use crate::{redis::types::NotificationData, NotificationPayload};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
@@ -20,10 +20,16 @@ use tonic::Status;
 
 pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
 
+#[derive(Debug, Clone)]
+pub struct ExpiredMeta {
+    pub category: String,
+    pub reason: &'static str,
+}
+
 #[derive(Debug)]
 pub struct ExpiredEntry {
     pub shard: u64,
-    pub stream_ids: Mutex<FxHashSet<String>>,
+    pub stream_ids: Mutex<FxHashMap<String, ExpiredMeta>>,
 }
 
 pub type ExpiredQueue = Arc<DashMap<ClientId, ExpiredEntry, FxBuildHasher>>;

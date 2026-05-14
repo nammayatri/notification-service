@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::{future::join_all, stream, StreamExt};
 use parking_lot::Mutex;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use shared::measure_latency_duration;
 use shared::redis::types::RedisConnectionPool;
 use std::{sync::Arc, time::Duration};
@@ -52,12 +52,13 @@ fn try_push_expired(
     client_id: &ClientId,
     shard: u64,
     stream_id: String,
+    meta: ExpiredMeta,
     origin: &'static str,
 ) {
     if let Some(entry) = expired_queue.get(client_id) {
         match entry.value().stream_ids.try_lock() {
             Some(mut guard) => {
-                guard.insert(stream_id);
+                guard.entry(stream_id).or_insert(meta);
                 return;
             }
             None => {
@@ -67,13 +68,13 @@ fn try_push_expired(
         }
     }
 
-    let mut set = FxHashSet::default();
-    set.insert(stream_id);
+    let mut map = FxHashMap::default();
+    map.insert(stream_id, meta);
     let _ = expired_queue.insert(
         client_id.clone(),
         ExpiredEntry {
             shard,
-            stream_ids: Mutex::new(set),
+            stream_ids: Mutex::new(map),
         },
     );
 }
@@ -123,19 +124,27 @@ async fn flush_expired_queue(redis_pool: &Arc<RedisConnectionPool>, expired_queu
     let keys: Vec<ClientId> = expired_queue.iter().map(|e| e.key().clone()).collect();
 
     for client_id in keys {
-        let (shard, ids) = match expired_queue.get(&client_id) {
+        let (shard, drained) = match expired_queue.get(&client_id) {
             Some(entry) => {
                 let shard = entry.value().shard;
                 let mut guard = entry.value().stream_ids.lock();
                 if guard.is_empty() {
                     continue;
                 }
-                let ids: Vec<String> = guard.drain().collect();
-                (shard, ids)
+                let drained: Vec<(String, ExpiredMeta)> = guard.drain().collect();
+                (shard, drained)
             }
             None => continue,
         };
         expired_queue.remove_if(&client_id, |_, e| e.stream_ids.lock().is_empty());
+
+        let mut ids: Vec<String> = Vec::with_capacity(drained.len());
+        for (stream_id, meta) in drained {
+            EXPIRED_NOTIFICATIONS
+                .with_label_values(&[&meta.category, meta.reason])
+                .inc();
+            ids.push(stream_id);
+        }
 
         by_shard
             .entry(shard)
@@ -424,20 +433,18 @@ async fn retry_pending_in_memory(
                                     .lock()
                                     .try_claim_expired_with_reason(&notification.id);
                                 if let Some(reason) = reason {
-                                    EXPIRED_NOTIFICATIONS
-                                        .with_label_values(&[
-                                            &notification.category,
-                                            reason.as_str(),
-                                        ])
-                                        .inc();
+                                    try_push_expired(
+                                        &expired_queue,
+                                        &client_id,
+                                        shard.inner(),
+                                        notification.stream_id.inner(),
+                                        ExpiredMeta {
+                                            category: notification.category.clone(),
+                                            reason: reason.as_str(),
+                                        },
+                                        "retry",
+                                    );
                                 }
-                                try_push_expired(
-                                    &expired_queue,
-                                    &client_id,
-                                    shard.inner(),
-                                    notification.stream_id.inner(),
-                                    "retry",
-                                );
                                 active.lock().acknowledge(&notification.id);
                                 return;
                             }
@@ -615,17 +622,18 @@ async fn dispatch_and_send_notifications(
 
         if notification.ttl.inner() < Utc::now() {
             if let Some(reason) = expiry_reason {
-                EXPIRED_NOTIFICATIONS
-                    .with_label_values(&[&notification.category, reason.as_str()])
-                    .inc();
+                try_push_expired(
+                    expired_queue,
+                    client_id,
+                    shard.inner(),
+                    notification.stream_id.inner(),
+                    ExpiredMeta {
+                        category: notification.category.clone(),
+                        reason: reason.as_str(),
+                    },
+                    "dispatch",
+                );
             }
-            try_push_expired(
-                expired_queue,
-                client_id,
-                shard.inner(),
-                notification.stream_id.inner(),
-                "dispatch",
-            );
         } else {
             for client_tx in target_client_txs {
                 match send_notification(client_tx, notification.to_owned(), source).await {
