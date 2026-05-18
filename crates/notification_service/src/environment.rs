@@ -69,13 +69,19 @@ impl AppState {
                 .expect("Failed to create Redis connection pool"),
         );
 
+        // Override gRPC port from SERVICE_PORT env var if set, otherwise use dhall config.
+        let grpc_port = std::env::var("SERVICE_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(app_config.grpc_port);
+
         AppState {
             redis_pool,
             internal_auth_cfg: app_config.internal_auth_cfg,
             driver_api_base_url: app_config.driver_api_base_url,
             retry_delay_millis: app_config.retry_delay_millis,
             expired_cleanup_delay_millis: app_config.expired_cleanup_delay_millis,
-            grpc_port: app_config.grpc_port,
+            grpc_port,
             http_server_port: app_config.http_server_port,
             max_shards: app_config.max_shards,
             channel_buffer: app_config.channel_buffer,
