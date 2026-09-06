@@ -32,6 +32,8 @@ use tokio::{
     },
 };
 use tonic::transport::Server;
+use tonic_web::GrpcWebLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::*;
 
 pub async fn run_server() -> Result<()> {
@@ -96,11 +98,19 @@ pub async fn run_server() -> Result<()> {
     .run();
 
     let grpc_port = app_state.grpc_port;
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_headers(Any)
+        .allow_methods(Any)
+        .expose_headers(Any);
     let middleware = tower::ServiceBuilder::new()
+        .layer(cors)
+        .layer(GrpcWebLayer::new())
         .layer(RequestResponseTrackingMiddlewareLayer)
         .into_inner();
     let notification_service = NotificationService::new(read_notification_tx, app_state);
     let grpc_server = Server::builder()
+        .accept_http1(true)
         .layer(middleware)
         .add_service(NotificationServer::new(notification_service))
         .add_service(HealthServer::new(Healthcheck))

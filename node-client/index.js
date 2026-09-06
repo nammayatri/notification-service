@@ -22,11 +22,11 @@ const connect = () => {
   // Create a new gRPC client
   client = new notificationProto.Notification(
     "beta.beckn.uat.juspay.net:50051",
-    grpc.credentials.createSsl()
+    grpc.credentials.createSsl(),
   );
 
   const metadata = new grpc.Metadata();
-  metadata.add("token-origin", "DriverDashboard");
+  metadata.add("token-origin", "Dashboard");
   metadata.add("token", "618da5ec-c349-4715-8537-f5ca0bba8a5f");
 
   console.log("Establishing new gRPC connection...");

@@ -141,8 +141,7 @@ pub type ReaderMap = FxHashMap<ClientId, SessionMap>;
 pub enum TokenOrigin {
     DriverApp,
     RiderApp,
-    DriverDashboard,
-    RiderDashboard,
+    Dashboard,
 }
 
 #[derive(Debug)]
