@@ -9,12 +9,12 @@ const notificationService = new NotificationClient(
   null,
   {
     withCredentials: true, // Ensure no CORS credential issues
-  }
+  },
 );
 
 // ✅ Create the metadata correctly
 const metadata = {
-  "token-origin": "DriverDashboard",
+  "token-origin": "Dashboard",
   token: "d8a51bfb-0b17-433c-a6db-6bb2c045d599",
 };
 

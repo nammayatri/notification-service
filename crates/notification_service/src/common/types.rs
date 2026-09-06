@@ -247,8 +247,7 @@ pub type ReaderMap = DashMap<ClientId, ClientEntry, FxBuildHasher>;
 pub enum TokenOrigin {
     DriverApp,
     RiderApp,
-    DriverDashboard,
-    RiderDashboard,
+    Dashboard,
 }
 
 #[derive(Deserialize)]

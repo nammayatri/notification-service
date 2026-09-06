@@ -27,8 +27,9 @@ let driver_internal_auth_config = {
     auth_token_expiry = 86400
 }
 
-let driver_dashboard_internal_auth_config = {
-    auth_url = "http://127.0.0.1:8016/internal/auth",
+
+let dashboard_internal_auth_config = {
+    auth_url = "http://127.0.0.1:8018/bpp/driver-offer/internal/auth",
     auth_api_key = "ae288466-2add-11ee-be56-0242ac120002",
     auth_token_expiry = 86400
 }
@@ -36,8 +37,7 @@ let driver_dashboard_internal_auth_config = {
 let tokenOriginInternalAuthMap =
     { DriverApp = driver_internal_auth_config
     , RiderApp = driver_internal_auth_config
-    , DriverDashboard = driver_dashboard_internal_auth_config
-    , RiderDashboard = driver_dashboard_internal_auth_config
+    , Dashboard = dashboard_internal_auth_config
     }
 
 in {
