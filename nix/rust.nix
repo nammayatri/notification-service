@@ -9,7 +9,16 @@
           "clippy"
         ];
       };
-      craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
+      craneLib =
+        let
+          base = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
+        in
+        base.appendCrateRegistries [
+          (base.registryFromDownloadUrl {
+            dl = "https://static.crates.io/crates";
+            indexUrl = "https://github.com/rust-lang/crates.io-index";
+          })
+        ];
       args = {
         pname = "notification-service";
         src = ./..;
@@ -17,6 +26,7 @@
           (with pkgs.darwin.apple_sdk.frameworks; [
             Security
             SystemConfiguration
+            CoreServices
           ]) ++ [
           pkgs.libiconv
           pkgs.openssl
