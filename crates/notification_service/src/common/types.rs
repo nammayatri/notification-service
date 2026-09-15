@@ -162,9 +162,16 @@ impl ActiveNotification {
         }
     }
 
+    pub fn attempt(&self, notification_id: &NotificationId) -> &'static str {
+        match self.0.get(notification_id) {
+            Some(meta) if meta.sent_at.is_some() => "repeat",
+            _ => "first",
+        }
+    }
+
     pub fn try_claim_retry(&mut self, notification_id: &NotificationId) -> bool {
         match self.0.get_mut(notification_id) {
-            Some(meta) if meta.total_counted && !meta.retry_counted => {
+            Some(meta) if meta.sent_at.is_some() && !meta.retry_counted => {
                 meta.retry_counted = true;
                 true
             }
@@ -248,6 +255,22 @@ pub enum TokenOrigin {
     DriverApp,
     RiderApp,
     Dashboard,
+}
+
+#[derive(Debug, Clone, Copy, Display, Serialize, Deserialize, Eq, PartialEq)]
+pub enum DeliveryMode {
+    Sweep,
+    Pubsub,
+}
+
+impl DeliveryMode {
+    pub fn needs_connect_catchup(&self) -> bool {
+        matches!(self, DeliveryMode::Pubsub)
+    }
+
+    pub fn needs_independent_retry_loop(&self) -> bool {
+        matches!(self, DeliveryMode::Pubsub)
+    }
 }
 
 #[derive(Deserialize)]

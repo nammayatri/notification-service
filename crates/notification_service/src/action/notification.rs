@@ -515,7 +515,7 @@ impl Notification for NotificationService {
 
                             if let (Some(acked), Some(shard)) = (acked, shard_opt) {
                                 if let Some(sent_at) = acked.sent_at {
-                                    notification_latency!(sent_at, "ACK", "client");
+                                    notification_latency!(sent_at, "ACK", "client", "first");
                                 }
                                 DELIVERED_NOTIFICATIONS
                                     .with_label_values(&[&acked.category])

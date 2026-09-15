@@ -7,7 +7,7 @@
 */
 #![allow(clippy::expect_used)]
 
-use crate::common::types::TokenOrigin;
+use crate::common::types::{DeliveryMode, TokenOrigin};
 use reqwest::Url;
 use serde::Deserialize;
 use shared::redis::types::{RedisConnectionPool, RedisSettings};
@@ -32,11 +32,12 @@ pub struct AppConfig {
     pub logger_cfg: LoggerConfig,
     pub redis_cfg: RedisSettings,
     pub retry_delay_millis: u64,
+    pub sweep_delay_millis: u64,
     pub expired_cleanup_delay_millis: u64,
     pub max_shards: u64,
     pub channel_buffer: usize,
     pub request_timeout_seconds: u64,
-    pub read_all_connected_client_notifications: bool,
+    pub delivery_mode: DeliveryMode,
 }
 
 #[derive(Clone)]
@@ -45,7 +46,9 @@ pub struct AppState {
     pub internal_auth_cfg: HashMap<TokenOrigin, InternalAuthConfig>,
     pub driver_api_base_url: Url,
     pub retry_delay_millis: u64,
+    pub sweep_delay_millis: u64,
     pub expired_cleanup_delay_millis: u64,
+    pub delivery_mode: DeliveryMode,
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub max_shards: u64,
@@ -80,7 +83,9 @@ impl AppState {
             internal_auth_cfg: app_config.internal_auth_cfg,
             driver_api_base_url: app_config.driver_api_base_url,
             retry_delay_millis: app_config.retry_delay_millis,
+            sweep_delay_millis: app_config.sweep_delay_millis,
             expired_cleanup_delay_millis: app_config.expired_cleanup_delay_millis,
+            delivery_mode: app_config.delivery_mode,
             grpc_port,
             http_server_port: app_config.http_server_port,
             max_shards: app_config.max_shards,
