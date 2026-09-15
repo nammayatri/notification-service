@@ -25,7 +25,8 @@ use crate::{
     },
     tools::prometheus::{
         CHANNEL_DELAY, CLEANUP_PUSH_SKIPPED, CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS,
-        MEASURE_DURATION, NOTIFICATION_LATENCY, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+        MEASURE_DURATION, NOTIFICATION_LATENCY, PUBSUB_MESSAGES, RETRIED_NOTIFICATIONS,
+        TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
@@ -94,13 +95,15 @@ async fn send_notification(
     client_tx: &ClientTx,
     notification: NotificationData,
     source: &'static str,
+    attempt: &'static str,
 ) -> Result<()> {
     client_tx_send(client_tx, &notification).await?;
 
     notification_latency!(
         get_timestamp_from_stream_id(&notification.stream_id.inner()).inner(),
         "NACK",
-        source
+        source,
+        attempt
     );
 
     Ok(())
@@ -207,7 +210,7 @@ async fn client_reciever(
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
     max_shards: u64,
-    read_all_connected_client_notifications: bool,
+    delivery_mode: DeliveryMode,
 ) {
     match client_req {
         SenderType::ClientConnection((session_id, client_tx)) => {
@@ -255,7 +258,7 @@ async fn client_reciever(
 
             measure_latency_duration!("client_reciever_clients_tx_write", start);
 
-            if !read_all_connected_client_notifications {
+            if delivery_mode.needs_connect_catchup() {
                 let redis_pool = redis_pool.clone();
                 let clients_tx = clients_tx.clone();
                 let expired_queue = expired_queue.clone();
@@ -288,7 +291,7 @@ async fn client_reciever_looper(
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
     max_shards: u64,
-    read_all_connected_client_notifications: bool,
+    delivery_mode: DeliveryMode,
 ) {
     while let Some((client_id, client_tx, sent_at)) = read_notification_rx.recv().await {
         channel_delay!(sent_at, &client_tx.to_string());
@@ -300,7 +303,7 @@ async fn client_reciever_looper(
             clients_tx.clone(),
             expired_queue.clone(),
             max_shards,
-            read_all_connected_client_notifications,
+            delivery_mode,
         )
         .await;
     }
@@ -449,11 +452,15 @@ async fn retry_pending_in_memory(
                                 return;
                             }
 
-                            if active.lock().try_claim_retry(&notification.id) {
-                                RETRIED_NOTIFICATIONS
-                                    .with_label_values(&[&notification.category])
-                                    .inc();
-                            }
+                            let attempt = {
+                                let mut guard = active.lock();
+                                if guard.try_claim_retry(&notification.id) {
+                                    RETRIED_NOTIFICATIONS
+                                        .with_label_values(&[&notification.category])
+                                        .inc();
+                                }
+                                guard.attempt(&notification.id)
+                            };
 
                             stream::iter(txs.into_iter())
                                 .for_each_concurrent(RETRY_PER_TARGET_CONCURRENCY, |client_tx| {
@@ -461,8 +468,13 @@ async fn retry_pending_in_memory(
                                     let notification = notification.clone();
                                     let notification_id = notification.id.clone();
                                     async move {
-                                        match send_notification(&client_tx, notification, "retry")
-                                            .await
+                                        match send_notification(
+                                            &client_tx,
+                                            notification,
+                                            "retry",
+                                            attempt,
+                                        )
+                                        .await
                                         {
                                             Ok(()) => active
                                                 .lock()
@@ -481,35 +493,51 @@ async fn retry_pending_in_memory(
 }
 
 #[macros::measure_duration]
-async fn retry_notifications(
+async fn full_sweep(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
     max_shards: u64,
-    _read_all_connected_client_notifications: bool,
 ) {
     backfill_new_entries(&redis_pool, &clients_tx, max_shards).await;
     retry_pending_in_memory(&redis_pool, &clients_tx, &expired_queue).await;
 }
 
-async fn retry_notifications_looper(
+async fn sweep_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
     max_shards: u64,
-    read_all_connected_client_notifications: bool,
     delay: Duration,
 ) {
     loop {
-        retry_notifications(
+        full_sweep(
             redis_pool.clone(),
             clients_tx.clone(),
             expired_queue.clone(),
             max_shards,
-            read_all_connected_client_notifications,
         )
         .await;
         sleep(delay).await;
+    }
+}
+
+async fn retry_looper(
+    redis_pool: Arc<RedisConnectionPool>,
+    clients_tx: Arc<ReaderMap>,
+    expired_queue: ExpiredQueue,
+    delay: Duration,
+) {
+    loop {
+        retry_pending_in_memory(&redis_pool, &clients_tx, &expired_queue).await;
+        sleep(delay).await;
+    }
+}
+
+async fn optional_task(task: Option<tokio::task::JoinHandle<()>>) -> String {
+    match task {
+        Some(handle) => format!("{:?}", handle.await),
+        None => std::future::pending().await,
     }
 }
 
@@ -603,7 +631,7 @@ async fn dispatch_and_send_notifications(
     };
 
     for notification in notifications {
-        let (count_total, expiry_reason) = {
+        let (count_total, expiry_reason, attempt) = {
             let mut guard = active.lock();
             let ct = guard.try_claim_total(&notification);
             let reason = if notification.ttl.inner() < Utc::now() {
@@ -611,7 +639,8 @@ async fn dispatch_and_send_notifications(
             } else {
                 None
             };
-            (ct, reason)
+            let attempt = guard.attempt(&notification.id);
+            (ct, reason, attempt)
         };
 
         if count_total {
@@ -636,7 +665,7 @@ async fn dispatch_and_send_notifications(
             }
         } else {
             for client_tx in target_client_txs {
-                match send_notification(client_tx, notification.to_owned(), source).await {
+                match send_notification(client_tx, notification.to_owned(), source, attempt).await {
                     Ok(()) => {
                         active.lock().mark_sent(&notification.id, Utc::now());
                     }
@@ -682,6 +711,7 @@ async fn active_notification(
         };
 
         let Some(shard) = shard_opt else {
+            PUBSUB_MESSAGES.with_label_values(&["foreign"]).inc();
             warn!(
                 "Client ({:?}) entry does not exist, client got disconnected intermittently.",
                 client_id
@@ -690,6 +720,7 @@ async fn active_notification(
         };
 
         if !all_clients_tx.is_empty() {
+            PUBSUB_MESSAGES.with_label_values(&["local"]).inc();
             let redis_pool = redis_pool.clone();
             let clients_tx = clients_tx.clone();
             let expired_queue_ref = expired_queue.clone();
@@ -704,6 +735,7 @@ async fn active_notification(
             )
             .await;
         } else {
+            PUBSUB_MESSAGES.with_label_values(&["no_session"]).inc();
             warn!("[Notification Service] - Client Not Connected to this Server")
         }
     }
@@ -746,12 +778,11 @@ async fn active_notification_looper(
             }
         }
 
-        retry_notifications(
+        full_sweep(
             redis_pool.clone(),
             clients_tx.clone(),
             expired_queue.clone(),
             max_shards,
-            true,
         )
         .await;
 
@@ -766,11 +797,17 @@ pub async fn run_notification_reader(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<ReaderMap>,
     retry_delay_millis: u64,
+    sweep_delay_millis: u64,
     expired_cleanup_delay_millis: u64,
     max_shards: u64,
-    read_all_connected_client_notifications: bool,
+    delivery_mode: DeliveryMode,
 ) {
     let expired_queue = new_expired_queue();
+
+    info!(
+        "[Notification Service] - delivery_mode: {}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}",
+        delivery_mode, sweep_delay_millis, retry_delay_millis, max_shards
+    );
 
     let rx_task = tokio::spawn(client_reciever_looper(
         redis_pool.clone(),
@@ -778,17 +815,17 @@ pub async fn run_notification_reader(
         clients_tx.clone(),
         expired_queue.clone(),
         max_shards,
-        read_all_connected_client_notifications,
+        delivery_mode,
     ));
 
-    let retry_notifications_task = tokio::spawn(retry_notifications_looper(
-        redis_pool.clone(),
-        clients_tx.clone(),
-        expired_queue.clone(),
-        max_shards,
-        read_all_connected_client_notifications,
-        Duration::from_millis(retry_delay_millis),
-    ));
+    let retry_task = delivery_mode.needs_independent_retry_loop().then(|| {
+        tokio::spawn(retry_looper(
+            redis_pool.clone(),
+            clients_tx.clone(),
+            expired_queue.clone(),
+            Duration::from_millis(retry_delay_millis),
+        ))
+    });
 
     let expire_notifications_task = tokio::spawn(expire_notifications_looper(
         redis_pool.clone(),
@@ -796,45 +833,41 @@ pub async fn run_notification_reader(
         Duration::from_millis(expired_cleanup_delay_millis),
     ));
 
-    if read_all_connected_client_notifications {
-        tokio::select!(
-            res = rx_task => {
-                error!("[Notification Service Error] - [CLIENT_RECIEVER_TASK] : {:?}", res);
-            },
-            res = retry_notifications_task => {
-                error!("[Notification Service Error] - [RETRY_NOTIFICATION_TASK] : {:?}", res);
-            },
-            res = expire_notifications_task => {
-                error!("[Notification Service Error] - [EXPIRE_NOTIFICATION_TASK] : {:?}", res);
-            },
-            _ = graceful_termination_signal_rx => {
-                error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
-            }
-        );
-    } else {
-        let active_notifications = tokio::spawn(active_notification_looper(
+    let sweep_task = tokio::spawn(sweep_looper(
+        redis_pool.clone(),
+        clients_tx.clone(),
+        expired_queue.clone(),
+        max_shards,
+        Duration::from_millis(sweep_delay_millis),
+    ));
+
+    let active_notification_task = (delivery_mode == DeliveryMode::Pubsub).then(|| {
+        tokio::spawn(active_notification_looper(
             redis_pool.clone(),
             clients_tx.clone(),
             expired_queue.clone(),
             max_shards,
-        ));
+        ))
+    });
 
-        tokio::select!(
-            res = rx_task => {
-                error!("[Notification Service Error] - [CLIENT_RECIEVER_TASK] : {:?}", res);
-            },
-            res = active_notifications => {
-                error!("[Notification Service Error] - [ACTIVE_NOTIFICATION_TASK] : {:?}", res);
-            },
-            res = retry_notifications_task => {
-                error!("[Notification Service Error] - [RETRY_NOTIFICATION_TASK] : {:?}", res);
-            },
-            res = expire_notifications_task => {
-                error!("[Notification Service Error] - [EXPIRE_NOTIFICATION_TASK] : {:?}", res);
-            },
-            _ = graceful_termination_signal_rx => {
-                error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
-            }
-        );
-    }
+    tokio::select!(
+        res = rx_task => {
+            error!("[Notification Service Error] - [CLIENT_RECIEVER_TASK] : {:?}", res);
+        },
+        res = optional_task(retry_task) => {
+            error!("[Notification Service Error] - [RETRY_TASK] : {}", res);
+        },
+        res = expire_notifications_task => {
+            error!("[Notification Service Error] - [EXPIRE_NOTIFICATION_TASK] : {:?}", res);
+        },
+        res = sweep_task => {
+            error!("[Notification Service Error] - [SWEEP_TASK] : {:?}", res);
+        },
+        res = optional_task(active_notification_task) => {
+            error!("[Notification Service Error] - [ACTIVE_NOTIFICATION_TASK] : {}", res);
+        },
+        _ = graceful_termination_signal_rx => {
+            error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
+        }
+    );
 }

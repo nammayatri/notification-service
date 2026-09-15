@@ -52,7 +52,7 @@ pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
                     60.0, 120.0, 300.0
                 ]
             ),
-            &["version", "ack", "source"]
+            &["version", "ack", "source", "attempt"]
         )
         .expect("Failed to register notifiction latency metrics")
     });
@@ -90,10 +90,20 @@ pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
         register_int_counter_vec!(
             "retried_notifications",
-            "Retried Notifications",
+            "Notifications retried at least once (not the retry count)",
             &["category"]
         )
         .expect("Failed to register retried notifications metrics")
+    });
+
+pub static PUBSUB_MESSAGES: once_cell::sync::Lazy<IntCounterVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_counter_vec!(
+            "pubsub_messages_total",
+            "Pub/Sub notifications received by this pod, by whether it holds the client",
+            &["outcome"]
+        )
+        .expect("Failed to register pubsub messages metrics")
     });
 
 pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
@@ -139,12 +149,12 @@ macro_rules! incoming_api {
 
 #[macro_export]
 macro_rules! notification_latency {
-    ($start:expr, $ack:expr, $source:expr) => {
+    ($start:expr, $ack:expr, $source:expr, $attempt:expr) => {
         let now = Utc::now();
         let duration = abs_diff_utc_as_sec($start, now);
         let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
         NOTIFICATION_LATENCY
-            .with_label_values(&[version.as_str(), $ack, $source])
+            .with_label_values(&[version.as_str(), $ack, $source, $attempt])
             .observe(duration);
     };
 }
@@ -238,6 +248,19 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(CLEANUP_PUSH_SKIPPED.to_owned()))
         .expect("Failed to register cleanup_push_skipped metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(PUBSUB_MESSAGES.to_owned()))
+        .expect("Failed to register pubsub messages metrics");
+
+    #[cfg(target_os = "linux")]
+    prometheus
+        .registry
+        .register(Box::new(
+            prometheus::process_collector::ProcessCollector::for_self(),
+        ))
+        .expect("Failed to register process collector");
 
     prometheus
 }

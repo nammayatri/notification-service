@@ -16,6 +16,8 @@ let redis_cfg = {
 
 let LogLevel = < TRACE | DEBUG | INFO | WARN | ERROR | OFF >
 
+let DeliveryMode = < Sweep | Pubsub >
+
 let logger_cfg = {
     level = LogLevel.INFO,
     log_to_file = False
@@ -51,6 +53,7 @@ in {
     channel_buffer = 100000,
     request_timeout_seconds = 60,
     retry_delay_millis = 1000,
+    sweep_delay_millis = 1000,
     expired_cleanup_delay_millis = 500,
-    read_all_connected_client_notifications = True
+    delivery_mode = DeliveryMode.Pubsub
 }

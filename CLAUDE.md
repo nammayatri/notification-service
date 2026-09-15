@@ -21,19 +21,19 @@ A gRPC push-notification service written in Rust. Clients (driver/rider apps, da
   - `src/tools/prometheus.rs` — metrics (`TOTAL_NOTIFICATIONS`, `RETRIED_NOTIFICATIONS`, `EXPIRED_NOTIFICATIONS`, `CONNECTED_CLIENTS`, `NOTIFICATION_LATENCY`, `CHANNEL_DELAY`, …).
   - `protos/notification_service.proto`, `protos/healthcheck.proto`.
 - `crates/tests/` — integration / load tests.
-- `dhall-configs/dev/notification_service.dhall` — runtime config (Redis, ports, shards, `retry_delay_millis`, `read_all_connected_client_notifications`, …).
+- `dhall-configs/dev/notification_service.dhall` — runtime config (Redis, ports, shards, `delivery_mode`, `sweep_delay_millis`, `retry_delay_millis`, …).
 - `web-client/`, `node-client/`, `android-client/` — reference client SDKs.
 - `nix/`, `flake.nix` — Nix dev shell and build.
 - `justfile` — `just run`, `just fmt`, `just services`, `just fix-warnings`.
 
-## Reader modes (`read_all_connected_client_notifications`)
+## Reader modes (`delivery_mode`)
 
-`crates/notification_service/src/reader.rs::run_notification_reader` branches on this flag:
+`crates/notification_service/src/reader.rs::run_notification_reader` spawns loops according to `DeliveryMode` (`common/types.rs`). `sweep_looper` (`full_sweep` = `backfill_new_entries` + `retry_pending_in_memory`, every `sweep_delay_millis`) and `expire_notifications_looper` run in both modes.
 
-- **`false` (event-driven)** — spawns `client_reciever_looper`, `retry_notifications_looper`, and `active_notification_looper`. New entries are picked up via Redis Pub/Sub on `pubsub_channel_key()`. `ActiveNotification` is preloaded on connect and tracks per-session unacked stream IDs; the retry sweep only queries clients with `count() > 0`. Resends bump `RETRIED_NOTIFICATIONS`.
-- **`true` (poll-all)** — pub/sub loop is **not** spawned. `ActiveNotification` is created empty on connect (skipping the connect-time Redis read). The retry sweep returns every connected `client_id` per shard and reads its stream every `retry_delay_millis`. All deliveries count as `TOTAL_NOTIFICATIONS`. This is the default in dev dhall.
+- **`Pubsub` (event-driven)** — additionally spawns `active_notification_looper` (Redis Pub/Sub on `pubsub_channel_key()`, one global channel so every pod sees every publish — `PUBSUB_MESSAGES{outcome}` tracks local/foreign/no_session) and `retry_looper` (`retry_pending_in_memory` every `retry_delay_millis`, no Redis reads). On connect, `client_reciever` spawns a `catchup` stream read. Set `sweep_delay_millis` long in this mode; the sweep is only a safety net. This is the default in dev dhall.
+- **`Sweep` (poll-all)** — only the shared loops. `ActiveNotification` starts empty on connect; the next sweep reads every connected client's stream from its `last_read_id` cursor. `retry_delay_millis` is unused.
 
-When changing reader behavior, keep both branches consistent — the `if read_all_connected_client_notifications` checks appear in `client_reciever`, `retry_notifications`, and `run_notification_reader`.
+When changing reader behavior, keep both modes consistent — the mode-dependent sites are `DeliveryMode::needs_connect_catchup` (in `client_reciever`) and `needs_independent_retry_loop` / the `Pubsub` check in `run_notification_reader`.
 
 ## Sharding & locking
 

@@ -50,12 +50,24 @@ pub async fn run_server() -> Result<()> {
     let _guard = setup_tracing(app_config.logger_cfg);
 
     std::panic::set_hook(Box::new(|panic_info| {
-        error!("Panic Occured : {:?}", panic_info);
-        panic!("Panic Occured : {:?}", panic_info);
+        let payload = panic_info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("<non-string panic payload>");
+        match panic_info.location() {
+            Some(location) => error!(
+                "Panic Occured : {} at {}:{}:{}",
+                message,
+                location.file(),
+                location.line(),
+                location.column()
+            ),
+            None => error!("Panic Occured : {}", message),
+        }
     }));
 
-    let read_all_connected_client_notifications =
-        app_config.read_all_connected_client_notifications;
     let app_state = AppState::new(app_config).await;
     #[allow(clippy::type_complexity)]
     let (read_notification_tx, read_notification_rx): (
@@ -91,9 +103,10 @@ pub async fn run_server() -> Result<()> {
         app_state.redis_pool.clone(),
         clients_tx.clone(),
         app_state.retry_delay_millis,
+        app_state.sweep_delay_millis,
         app_state.expired_cleanup_delay_millis,
         app_state.max_shards,
-        read_all_connected_client_notifications,
+        app_state.delivery_mode,
     );
 
     let prometheus = prometheus_metrics();
