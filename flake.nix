@@ -16,6 +16,8 @@
     process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
     services-flake.url = "github:juspay/services-flake";
 
+    nixpkgs-monitoring.url = "github:NixOS/nixpkgs/nixos-unstable";
+
     # Pre-commit
     pre-commit-hooks-nix.url = "github:cachix/pre-commit-hooks.nix";
   };

@@ -1,0 +1,27 @@
+[package]
+name = "sim-clients"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[[bin]]
+name = "sim-clients"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.75"
+futures = "0.3.28"
+parking_lot = "0.12"
+prometheus = "0.13.3"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_dhall = "0.12.1"
+serde_json = "1.0"
+tokio = { version = "1.29.1", features = ["full"] }
+tokio-stream = "0.1"
+tonic = "0.10.2"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+
+notification_service = { version = "0.1.0", path = "../notification_service" }
+sim-common = { version = "0.1.0", path = "../sim-common" }

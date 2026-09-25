@@ -47,18 +47,39 @@
       cargoArtifacts = craneLib.buildDepsOnly args;
       package = craneLib.buildPackage (args // {
         inherit cargoArtifacts;
+        cargoExtraArgs = "--locked --package notification_service";
         doCheck = false; # FIXME: tests require services to be running
       });
+
+      simPackage = name: craneLib.buildPackage (args // {
+        inherit cargoArtifacts;
+        pname = name;
+        cargoExtraArgs = "--locked --package ${name}";
+        doCheck = false; # covered by checks.sim-tests, which does not need services
+        meta.mainProgram = name;
+      });
+
+      simClients = simPackage "sim-clients";
+      simProducer = simPackage "sim-producer";
 
       check = craneLib.cargoClippy (args // {
         inherit cargoArtifacts;
         cargoClippyExtraArgs = "--all-targets --all-features -- --deny warnings";
       });
+
+      simTests = craneLib.cargoTest (args // {
+        inherit cargoArtifacts;
+        pname = "sim";
+        cargoExtraArgs = "--locked --package sim-common --package sim-clients --package sim-producer";
+      });
     in
     {
       packages.default = package;
+      packages.sim-clients = simClients;
+      packages.sim-producer = simProducer;
 
       checks.clippy = check;
+      checks.sim-tests = simTests;
 
       # Flake outputs
       devShells.rust = pkgs.mkShell {
