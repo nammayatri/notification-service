@@ -70,6 +70,16 @@ pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync:
         .expect("Failed to register connected clients metrics")
 });
 
+pub static CLIENT_SLOT_EVENTS: once_cell::sync::Lazy<IntCounterVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_counter_vec!(
+            "client_slot_events_total",
+            "Reader map slot transitions on connect/disconnect, by event",
+            &["event"]
+        )
+        .expect("Failed to register client slot events metrics")
+    });
+
 pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
         register_int_counter_vec!("total_notifications", "Total Notifications", &["category"])
@@ -261,6 +271,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(CLEANUP_PUSH_SKIPPED.to_owned()))
         .expect("Failed to register cleanup_push_skipped metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(CLIENT_SLOT_EVENTS.to_owned()))
+        .expect("Failed to register client slot events metrics");
 
     prometheus
         .registry

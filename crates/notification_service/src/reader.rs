@@ -24,14 +24,14 @@ use crate::{
         types::NotificationData,
     },
     tools::prometheus::{
-        CHANNEL_DELAY, CLEANUP_PUSH_SKIPPED, CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS,
-        MEASURE_DURATION, NOTIFICATION_LATENCY, PUBSUB_MESSAGES, RETRIED_NOTIFICATIONS,
-        TOTAL_NOTIFICATIONS,
+        CHANNEL_DELAY, CLEANUP_PUSH_SKIPPED, CLIENT_SLOT_EVENTS, CONNECTED_CLIENTS,
+        EXPIRED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_LATENCY, PUBSUB_MESSAGES,
+        RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use futures::{future::join_all, stream, StreamExt};
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
@@ -220,12 +220,29 @@ async fn handle_client_disconnection_or_failure(
     clients_tx: Arc<ReaderMap>,
     client_id: &ClientId,
     session_id: &Option<SessionID>,
+    stream_token: StreamToken,
+    stale_disconnect_guard: bool,
 ) {
     let start = tokio::time::Instant::now();
 
     let should_remove = if let Some(mut entry) = clients_tx.get_mut(client_id) {
         match &mut entry.value_mut().sessions {
-            SessionMap::Single(_) => true,
+            SessionMap::Single((owner, _, _)) if *owner == stream_token => {
+                CLIENT_SLOT_EVENTS.with_label_values(&["removed"]).inc();
+                true
+            }
+            SessionMap::Single(_) if stale_disconnect_guard => {
+                CLIENT_SLOT_EVENTS
+                    .with_label_values(&["stale_disconnect_ignored"])
+                    .inc();
+                false
+            }
+            SessionMap::Single(_) => {
+                CLIENT_SLOT_EVENTS
+                    .with_label_values(&["stale_disconnect_evicted"])
+                    .inc();
+                true
+            }
             SessionMap::Multi(sessions) => {
                 if let Some(session_id) = session_id.as_ref() {
                     sessions.remove(session_id);
@@ -238,6 +255,7 @@ async fn handle_client_disconnection_or_failure(
             }
         }
     } else {
+        CLIENT_SLOT_EVENTS.with_label_values(&["not_found"]).inc();
         warn!("[Notification Service Error] - ClientId not found");
         false
     };
@@ -256,6 +274,7 @@ async fn handle_client_disconnection_or_failure(
 struct ReceiverOptions {
     max_shards: u64,
     delivery_mode: DeliveryMode,
+    stale_disconnect_guard: bool,
     policy: DeliveryPolicy,
 }
 
@@ -271,10 +290,11 @@ async fn client_reciever(
     let ReceiverOptions {
         max_shards,
         delivery_mode,
+        stale_disconnect_guard,
         policy,
     } = options;
     match client_req {
-        SenderType::ClientConnection((session_id, client_tx)) => {
+        SenderType::ClientConnection((session_id, stream_token, client_tx)) => {
             info!("[Client Connected] : {:?}", client_id);
             CONNECTED_CLIENTS.inc();
 
@@ -285,34 +305,42 @@ async fn client_reciever(
             let active_notification = Arc::new(Mutex::new(ActiveNotification::default()));
             let client_tx_for_catchup = client_tx.clone();
 
-            {
-                let mut entry =
-                    clients_tx
-                        .entry(client_id.clone())
-                        .or_insert_with(|| ClientEntry {
-                            shard: shard.clone(),
-                            last_read_id: Mutex::new(StreamEntry::default()),
-                            sessions: if session_id.is_some() {
-                                SessionMap::Multi(FxHashMap::default())
-                            } else {
-                                SessionMap::Single((client_tx.clone(), active_notification.clone()))
-                            },
-                        });
-
-                match (&mut entry.sessions, session_id) {
-                    (SessionMap::Multi(sessions), Some(session_id)) => {
-                        sessions.insert(session_id, (client_tx, active_notification));
-                    }
-                    (sessions @ SessionMap::Multi(_), None) => {
-                        *sessions = SessionMap::Single((client_tx, active_notification));
-                    }
-                    (sessions @ SessionMap::Single(_), Some(session_id)) => {
-                        let mut map = FxHashMap::default();
-                        map.insert(session_id, (client_tx, active_notification));
-                        *sessions = SessionMap::Multi(map);
-                    }
-                    (sessions @ SessionMap::Single(_), None) => {
-                        *sessions = SessionMap::Single((client_tx, active_notification));
+            match clients_tx.entry(client_id.clone()) {
+                Entry::Vacant(vacant) => {
+                    CLIENT_SLOT_EVENTS.with_label_values(&["inserted"]).inc();
+                    let sessions = match session_id {
+                        Some(session_id) => {
+                            let mut map = FxHashMap::default();
+                            map.insert(session_id, (client_tx, active_notification));
+                            SessionMap::Multi(map)
+                        }
+                        None => SessionMap::Single((stream_token, client_tx, active_notification)),
+                    };
+                    vacant.insert(ClientEntry {
+                        shard: shard.clone(),
+                        last_read_id: Mutex::new(StreamEntry::default()),
+                        sessions,
+                    });
+                }
+                Entry::Occupied(mut occupied) => {
+                    match (&mut occupied.get_mut().sessions, session_id) {
+                        (SessionMap::Multi(sessions), Some(session_id)) => {
+                            sessions.insert(session_id, (client_tx, active_notification));
+                        }
+                        (sessions @ SessionMap::Multi(_), None) => {
+                            *sessions =
+                                SessionMap::Single((stream_token, client_tx, active_notification));
+                        }
+                        (sessions @ SessionMap::Single(_), Some(session_id)) => {
+                            let mut map = FxHashMap::default();
+                            map.insert(session_id, (client_tx, active_notification));
+                            *sessions = SessionMap::Multi(map);
+                        }
+                        (sessions @ SessionMap::Single(_), None) => {
+                            CLIENT_SLOT_EVENTS.with_label_values(&["replaced"]).inc();
+                            *sessions =
+                                SessionMap::Single((stream_token, client_tx, active_notification));
+                        }
                     }
                 }
             }
@@ -338,11 +366,17 @@ async fn client_reciever(
                 });
             }
         }
-        SenderType::ClientDisconnection(session_id) => {
+        SenderType::ClientDisconnection((session_id, stream_token)) => {
             warn!("[Client Disconnected] : {:?} : {:?}", client_id, session_id);
             CONNECTED_CLIENTS.dec();
-            handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &session_id)
-                .await;
+            handle_client_disconnection_or_failure(
+                clients_tx.clone(),
+                &client_id,
+                &session_id,
+                stream_token,
+                stale_disconnect_guard,
+            )
+            .await;
         }
     }
 }
@@ -461,7 +495,7 @@ async fn retry_pending_in_memory(
         let shard = entry.value().shard.clone();
         let client_id = entry.key().clone();
         match &entry.value().sessions {
-            SessionMap::Single((tx, active)) => work.push(PendingClientWork {
+            SessionMap::Single((_, tx, active)) => work.push(PendingClientWork {
                 client_id,
                 shard,
                 target_client_txs: vec![tx.clone()],
@@ -649,7 +683,7 @@ fn snapshot_session_actives(
 ) {
     match clients_tx.get(client_id) {
         Some(entry) => match &entry.value().sessions {
-            SessionMap::Single((_, active)) => (Some(active.clone()), vec![active.clone()]),
+            SessionMap::Single((_, _, active)) => (Some(active.clone()), vec![active.clone()]),
             SessionMap::Multi(client) => {
                 let actives: Vec<_> = client.values().map(|(_, a)| a.clone()).collect();
                 let primary = actives.first().cloned();
@@ -847,7 +881,7 @@ async fn active_notification(
             Some(entry) => {
                 let shard = entry.value().shard.clone();
                 let txs = match &entry.value().sessions {
-                    SessionMap::Single((client_tx, _)) => vec![client_tx.clone()],
+                    SessionMap::Single((_, client_tx, _)) => vec![client_tx.clone()],
                     SessionMap::Multi(client) => {
                         client.values().map(|(tx, _)| tx.clone()).collect()
                     }
@@ -952,13 +986,14 @@ pub async fn run_notification_reader(
     expired_cleanup_delay_millis: u64,
     max_shards: u64,
     delivery_mode: DeliveryMode,
+    stale_disconnect_guard: bool,
     policy: DeliveryPolicy,
 ) {
     let expired_queue = new_expired_queue();
 
     info!(
-        "[Notification Service] - delivery_mode: {}, delivery_guarantee: {}, push_cap: {:?}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}",
-        delivery_mode, policy.guarantee, policy.push_cap, sweep_delay_millis, retry_delay_millis, max_shards
+        "[Notification Service] - delivery_mode: {}, delivery_guarantee: {}, push_cap: {:?}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}, stale_disconnect_guard: {}",
+        delivery_mode, policy.guarantee, policy.push_cap, sweep_delay_millis, retry_delay_millis, max_shards, stale_disconnect_guard
     );
 
     let rx_task = tokio::spawn(client_reciever_looper(
@@ -969,6 +1004,7 @@ pub async fn run_notification_reader(
         ReceiverOptions {
             max_shards,
             delivery_mode,
+            stale_disconnect_guard,
             policy,
         },
     ));
@@ -1055,6 +1091,10 @@ mod tests {
     }
 
     fn reader_map_with_client(client_id: &ClientId) -> Arc<ReaderMap> {
+        reader_map_owned_by(client_id, StreamToken::next())
+    }
+
+    fn reader_map_owned_by(client_id: &ClientId, owner: StreamToken) -> Arc<ReaderMap> {
         let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
         let (client_tx, _client_rx) = sync::mpsc::channel(1);
         clients_tx.insert(
@@ -1063,12 +1103,49 @@ mod tests {
                 shard: Shard(0),
                 last_read_id: Mutex::new(StreamEntry::default()),
                 sessions: SessionMap::Single((
+                    owner,
                     client_tx,
                     Arc::new(Mutex::new(ActiveNotification::default())),
                 )),
             },
         );
         clients_tx
+    }
+
+    #[tokio::test]
+    async fn disconnect_from_the_owning_stream_removes_the_client() {
+        let client_id = ClientId("c1".to_string());
+        let owner = StreamToken::next();
+        let clients_tx = reader_map_owned_by(&client_id, owner);
+
+        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, owner, true)
+            .await;
+
+        assert!(clients_tx.get(&client_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_disconnect_is_ignored_when_guarded() {
+        let client_id = ClientId("c1".to_string());
+        let stale = StreamToken::next();
+        let clients_tx = reader_map_owned_by(&client_id, StreamToken::next());
+
+        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, stale, true)
+            .await;
+
+        assert!(clients_tx.get(&client_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_disconnect_still_evicts_when_unguarded() {
+        let client_id = ClientId("c1".to_string());
+        let stale = StreamToken::next();
+        let clients_tx = reader_map_owned_by(&client_id, StreamToken::next());
+
+        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, stale, false)
+            .await;
+
+        assert!(clients_tx.get(&client_id).is_none());
     }
 
     fn stream_ids(notifs: &[NotificationData]) -> Vec<String> {

@@ -364,11 +364,12 @@ impl Notification for NotificationService {
             self.app_state.request_timeout_seconds,
         );
 
+        let stream_token = StreamToken::next();
         let add_client_tx_start_time = Instant::now();
         if let Err(err) = read_notification_tx
             .send((
                 ClientId(client_id.to_owned()),
-                SenderType::ClientConnection((session_id.to_owned(), client_tx)),
+                SenderType::ClientConnection((session_id.to_owned(), stream_token, client_tx)),
                 Utc::now(),
             ))
             .await
@@ -391,7 +392,7 @@ impl Notification for NotificationService {
             if let Err(err) = read_notification_tx_clone
                 .send((
                     ClientId(client_id_clone.to_owned()),
-                    SenderType::ClientDisconnection(session_id),
+                    SenderType::ClientDisconnection((session_id, stream_token)),
                     Utc::now(),
                 ))
                 .await
@@ -461,11 +462,12 @@ impl Notification for NotificationService {
             self.app_state.request_timeout_seconds,
         );
 
+        let stream_token = StreamToken::next();
         let add_client_tx_start_time = Instant::now();
         if let Err(err) = read_notification_tx
             .send((
                 ClientId(client_id.to_owned()),
-                SenderType::ClientConnection((None, client_tx)),
+                SenderType::ClientConnection((None, stream_token, client_tx)),
                 Utc::now(),
             ))
             .await
@@ -498,7 +500,7 @@ impl Notification for NotificationService {
                                 Some(entry) => {
                                     let shard = entry.value().shard.clone();
                                     let active = match &entry.value().sessions {
-                                        SessionMap::Single((_, active)) => Some(active.clone()),
+                                        SessionMap::Single((_, _, active)) => Some(active.clone()),
                                         SessionMap::Multi(sessions) => {
                                             sessions.values().next().map(|(_, a)| a.clone())
                                         }
@@ -543,7 +545,7 @@ impl Notification for NotificationService {
                             if let Err(err) = read_notification_tx_clone
                                 .send((
                                     ClientId(client_id_clone.to_owned()),
-                                    SenderType::ClientDisconnection(None),
+                                    SenderType::ClientDisconnection((None, stream_token)),
                                     Utc::now(),
                                 ))
                                 .await
@@ -561,7 +563,7 @@ impl Notification for NotificationService {
                             if let Err(err) = read_notification_tx_clone
                                 .send((
                                     ClientId(client_id_clone.to_owned()),
-                                    SenderType::ClientDisconnection(None),
+                                    SenderType::ClientDisconnection((None, stream_token)),
                                     Utc::now(),
                                 ))
                                 .await
@@ -586,7 +588,7 @@ impl Notification for NotificationService {
                 if let Err(err) = read_notification_tx_clone
                     .send((
                         ClientId(client_id_clone.to_owned()),
-                        SenderType::ClientDisconnection(None),
+                        SenderType::ClientDisconnection((None, stream_token)),
                         Utc::now(),
                     ))
                     .await
