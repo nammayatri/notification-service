@@ -21,7 +21,7 @@ A gRPC push-notification service written in Rust. Clients (driver/rider apps, da
   - `src/tools/prometheus.rs` — metrics (`TOTAL_NOTIFICATIONS`, `RETRIED_NOTIFICATIONS`, `EXPIRED_NOTIFICATIONS`, `CONNECTED_CLIENTS`, `NOTIFICATION_LATENCY`, `CHANNEL_DELAY`, …).
   - `protos/notification_service.proto`, `protos/healthcheck.proto`.
 - `crates/tests/` — integration / load tests.
-- `dhall-configs/dev/notification_service.dhall` — runtime config (Redis, ports, shards, `delivery_mode`, `sweep_delay_millis`, `retry_delay_millis`, …).
+- `dhall-configs/dev/notification_service.dhall` — runtime config (Redis, ports, shards, `delivery_mode`, `delivery_guarantee`, `max_delivery_attempts`, `sweep_delay_millis`, `retry_delay_millis`, …).
 - `web-client/`, `node-client/`, `android-client/` — reference client SDKs.
 - `nix/`, `flake.nix` — Nix dev shell and build.
 - `justfile` — `just run`, `just fmt`, `just services`, `just fix-warnings`.
@@ -34,6 +34,15 @@ A gRPC push-notification service written in Rust. Clients (driver/rider apps, da
 - **`Sweep` (poll-all)** — only the shared loops. `ActiveNotification` starts empty on connect; the next sweep reads every connected client's stream from its `last_read_id` cursor. `retry_delay_millis` is unused.
 
 When changing reader behavior, keep both modes consistent — the mode-dependent sites are `DeliveryMode::needs_connect_catchup` (in `client_reciever`) and `needs_independent_retry_loop` / the `Pubsub` check in `run_notification_reader`.
+
+## Delivery guarantee (`delivery_guarantee`)
+
+This setting is separate from `delivery_mode`. `DeliveryGuarantee = AtMostOnce | AtLeastOnce` and the `max_delivery_attempts: Optional Natural` cap are combined into a `DeliveryPolicy` (`common/types.rs`) with a `push_cap`. `AtMostOnce` always sets the cap to 1; `AtLeastOnce` uses `max_delivery_attempts`, where `None` means unlimited. The policy is passed to every reader loop.
+
+- **`AtMostOnce`** (dev default, matches the old prod behaviour): after a push reaches at least one target, `settle_push_round` removes the entry from every session's `ActiveNotification` and queues an `XDEL` through the cleanup queue (`CleanupReason::Delivered`, which is not counted as expired). `claim_read_batch` only passes on entries past `last_read_id`, so a racing stale read cannot re-insert an entry that was already pushed. ACKs usually match nothing and increment `unmatched_acks_total`.
+- **`AtLeastOnce`**: entries stay until an ACK arrives or the TTL expires; `retry_pending_in_memory` re-pushes them until `push_cap` is reached.
+
+The guarantee-dependent sites are `claim_read_batch` (called from `ingest_backfill` and `active_notification_dispatch`), `try_claim_push` / `settle_push_round` in `dispatch_and_send_notifications` and `retry_pending_in_memory`, and `DeliveryPolicy::new`. Any new push path must claim through `try_claim_push` and finish with `settle_push_round`.
 
 ## Sharding & locking
 

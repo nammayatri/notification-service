@@ -11,8 +11,8 @@ extern crate shared;
 
 use actix_web_prom::PrometheusMetrics;
 use prometheus::{
-    histogram_opts, opts, register_histogram_vec, register_int_counter_vec, register_int_gauge,
-    HistogramVec, IntCounterVec, IntGauge,
+    histogram_opts, opts, register_histogram_vec, register_int_counter, register_int_counter_vec,
+    register_int_gauge, HistogramVec, IntCounter, IntCounterVec, IntGauge,
 };
 pub use shared::tools::prometheus::*;
 
@@ -85,6 +85,14 @@ pub static DELIVERED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
         )
         .expect("Failed to register delivered notifications metrics")
     });
+
+pub static UNMATCHED_ACKS: once_cell::sync::Lazy<IntCounter> = once_cell::sync::Lazy::new(|| {
+    register_int_counter!(
+        "unmatched_acks_total",
+        "ACKs matching no pending entry on this pod (already removed under AtMostOnce, already acked, or pushed by another pod)"
+    )
+    .expect("Failed to register unmatched acks metrics")
+});
 
 pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
@@ -238,6 +246,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(DELIVERED_NOTIFICATIONS.to_owned()))
         .expect("Failed to register delivered notifications metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(UNMATCHED_ACKS.to_owned()))
+        .expect("Failed to register unmatched acks metrics");
 
     prometheus
         .registry

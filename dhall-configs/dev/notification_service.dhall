@@ -18,6 +18,8 @@ let LogLevel = < TRACE | DEBUG | INFO | WARN | ERROR | OFF >
 
 let DeliveryMode = < Sweep | Pubsub >
 
+let DeliveryGuarantee = < AtMostOnce | AtLeastOnce >
+
 let logger_cfg = {
     level = LogLevel.INFO,
     log_to_file = False
@@ -55,5 +57,7 @@ in {
     retry_delay_millis = 1000,
     sweep_delay_millis = 1000,
     expired_cleanup_delay_millis = 500,
-    delivery_mode = DeliveryMode.Pubsub
+    delivery_mode = DeliveryMode.Pubsub,
+    delivery_guarantee = DeliveryGuarantee.AtMostOnce,
+    max_delivery_attempts = None Natural
 }

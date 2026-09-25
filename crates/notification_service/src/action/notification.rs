@@ -27,7 +27,7 @@ use crate::{
         error::AppError,
         prometheus::{
             DELIVERED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_CLIENT_CONNECTION_DURATION,
-            NOTIFICATION_LATENCY,
+            NOTIFICATION_LATENCY, UNMATCHED_ACKS,
         },
     },
     NotificationAck, NotificationPayload, QuoteRequest, QuoteResponse, QuoteResponseWithId,
@@ -534,9 +534,7 @@ impl Notification for NotificationService {
                                     )
                                 });
                             } else {
-                                DELIVERED_NOTIFICATIONS
-                                    .with_label_values(&["UNKNOWN"])
-                                    .inc();
+                                UNMATCHED_ACKS.inc();
                             }
                         }
                         Ok(None) => {

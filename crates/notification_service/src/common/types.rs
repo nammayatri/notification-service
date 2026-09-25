@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
 use std::hash::BuildHasherDefault;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use strum_macros::{Display, EnumIter, EnumString};
 use tokio::sync::mpsc::Sender;
@@ -20,10 +21,16 @@ use tonic::Status;
 
 pub type FxBuildHasher = BuildHasherDefault<FxHasher>;
 
+#[derive(Debug, Clone, Copy)]
+pub enum CleanupReason {
+    Expired(ExpiryReason),
+    Delivered,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExpiredMeta {
     pub category: String,
-    pub reason: &'static str,
+    pub reason: CleanupReason,
 }
 
 #[derive(Debug)]
@@ -70,6 +77,7 @@ pub struct StreamEntry(pub String);
 pub struct NotificationMeta {
     pub data: NotificationData,
     pub sent_at: Option<DateTime<Utc>>,
+    pub push_count: u32,
     pub total_counted: bool,
     pub retry_counted: bool,
     pub expired_counted: bool,
@@ -109,6 +117,7 @@ impl ActiveNotification {
                 .or_insert(NotificationMeta {
                     data: notification,
                     sent_at: None,
+                    push_count: 0,
                     total_counted: false,
                     retry_counted: false,
                     expired_counted: false,
@@ -141,6 +150,7 @@ impl ActiveNotification {
                     NotificationMeta {
                         data: notification.clone(),
                         sent_at: None,
+                        push_count: 0,
                         total_counted: true,
                         retry_counted: false,
                         expired_counted: false,
@@ -159,6 +169,26 @@ impl ActiveNotification {
     pub fn mark_sent(&mut self, notification_id: &NotificationId, now: DateTime<Utc>) {
         if let Some(meta) = self.0.get_mut(notification_id) {
             meta.sent_at = Some(now);
+        }
+    }
+
+    pub fn try_claim_push(
+        &mut self,
+        notification_id: &NotificationId,
+        push_cap: Option<u32>,
+    ) -> bool {
+        match self.0.get_mut(notification_id) {
+            Some(meta) if push_cap.is_none_or(|cap| meta.push_count < cap) => {
+                meta.push_count += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn release_push(&mut self, notification_id: &NotificationId) {
+        if let Some(meta) = self.0.get_mut(notification_id) {
+            meta.push_count = meta.push_count.saturating_sub(1);
         }
     }
 
@@ -270,6 +300,37 @@ impl DeliveryMode {
 
     pub fn needs_independent_retry_loop(&self) -> bool {
         matches!(self, DeliveryMode::Pubsub)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Display, Serialize, Deserialize, Eq, PartialEq)]
+pub enum DeliveryGuarantee {
+    AtMostOnce,
+    AtLeastOnce,
+}
+
+impl DeliveryGuarantee {
+    pub fn removes_on_push(&self) -> bool {
+        matches!(self, DeliveryGuarantee::AtMostOnce)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DeliveryPolicy {
+    pub guarantee: DeliveryGuarantee,
+    pub push_cap: Option<u32>,
+}
+
+impl DeliveryPolicy {
+    pub fn new(guarantee: DeliveryGuarantee, max_delivery_attempts: Option<NonZeroU32>) -> Self {
+        let push_cap = match guarantee {
+            DeliveryGuarantee::AtMostOnce => Some(1),
+            DeliveryGuarantee::AtLeastOnce => max_delivery_attempts.map(NonZeroU32::get),
+        };
+        DeliveryPolicy {
+            guarantee,
+            push_cap,
+        }
     }
 }
 

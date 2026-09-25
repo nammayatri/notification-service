@@ -107,6 +107,10 @@ pub async fn run_server() -> Result<()> {
         app_state.expired_cleanup_delay_millis,
         app_state.max_shards,
         app_state.delivery_mode,
+        DeliveryPolicy::new(
+            app_state.delivery_guarantee,
+            app_state.max_delivery_attempts,
+        ),
     );
 
     let prometheus = prometheus_metrics();

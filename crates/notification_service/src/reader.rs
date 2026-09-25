@@ -11,8 +11,8 @@ use crate::{
     common::{
         types::*,
         utils::{
-            abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid, max_stream_id,
-            transform_notification_data_to_payload,
+            abs_diff_utc_as_sec, get_timestamp_from_stream_id, hash_uuid, is_stream_id_less_or_eq,
+            max_stream_id, transform_notification_data_to_payload,
         },
     },
     notification_latency,
@@ -69,15 +69,63 @@ fn try_push_expired(
         }
     }
 
-    let mut map = FxHashMap::default();
-    map.insert(stream_id, meta);
-    let _ = expired_queue.insert(
-        client_id.clone(),
-        ExpiredEntry {
+    expired_queue
+        .entry(client_id.clone())
+        .or_insert_with(|| ExpiredEntry {
             shard,
-            stream_ids: Mutex::new(map),
-        },
-    );
+            stream_ids: Mutex::new(FxHashMap::default()),
+        })
+        .stream_ids
+        .lock()
+        .entry(stream_id)
+        .or_insert(meta);
+}
+
+fn push_delivered_cleanup(
+    cleanup_queue: &ExpiredQueue,
+    client_id: &ClientId,
+    shard: u64,
+    notification: &NotificationData,
+) {
+    cleanup_queue
+        .entry(client_id.clone())
+        .or_insert_with(|| ExpiredEntry {
+            shard,
+            stream_ids: Mutex::new(FxHashMap::default()),
+        })
+        .stream_ids
+        .lock()
+        .insert(
+            notification.stream_id.inner(),
+            ExpiredMeta {
+                category: notification.category.clone(),
+                reason: CleanupReason::Delivered,
+            },
+        );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settle_push_round(
+    policy: DeliveryPolicy,
+    clients_tx: &Arc<ReaderMap>,
+    cleanup_queue: &ExpiredQueue,
+    client_id: &ClientId,
+    shard: &Shard,
+    active: &Arc<Mutex<ActiveNotification>>,
+    notification: &NotificationData,
+    pushed: bool,
+) {
+    if !pushed {
+        active.lock().release_push(&notification.id);
+        return;
+    }
+    if policy.guarantee.removes_on_push() {
+        let (_, actives) = snapshot_session_actives(clients_tx, client_id);
+        for session_active in actives {
+            session_active.lock().acknowledge(&notification.id);
+        }
+        push_delivered_cleanup(cleanup_queue, client_id, shard.inner(), notification);
+    }
 }
 
 #[macros::measure_duration]
@@ -143,9 +191,11 @@ async fn flush_expired_queue(redis_pool: &Arc<RedisConnectionPool>, expired_queu
 
         let mut ids: Vec<String> = Vec::with_capacity(drained.len());
         for (stream_id, meta) in drained {
-            EXPIRED_NOTIFICATIONS
-                .with_label_values(&[&meta.category, meta.reason])
-                .inc();
+            if let CleanupReason::Expired(reason) = meta.reason {
+                EXPIRED_NOTIFICATIONS
+                    .with_label_values(&[&meta.category, reason.as_str()])
+                    .inc();
+            }
             ids.push(stream_id);
         }
 
@@ -202,6 +252,13 @@ async fn handle_client_disconnection_or_failure(
     );
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ReceiverOptions {
+    max_shards: u64,
+    delivery_mode: DeliveryMode,
+    policy: DeliveryPolicy,
+}
+
 #[macros::measure_duration]
 async fn client_reciever(
     redis_pool: Arc<RedisConnectionPool>,
@@ -209,9 +266,13 @@ async fn client_reciever(
     client_req: SenderType,
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
-    max_shards: u64,
-    delivery_mode: DeliveryMode,
+    options: ReceiverOptions,
 ) {
+    let ReceiverOptions {
+        max_shards,
+        delivery_mode,
+        policy,
+    } = options;
     match client_req {
         SenderType::ClientConnection((session_id, client_tx)) => {
             info!("[Client Connected] : {:?}", client_id);
@@ -271,6 +332,7 @@ async fn client_reciever(
                         &shard,
                         &[client_tx_for_catchup],
                         "catchup",
+                        policy,
                     )
                     .await;
                 });
@@ -290,8 +352,7 @@ async fn client_reciever_looper(
     mut read_notification_rx: Receiver<(ClientId, SenderType, DateTime<Utc>)>,
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
-    max_shards: u64,
-    delivery_mode: DeliveryMode,
+    options: ReceiverOptions,
 ) {
     while let Some((client_id, client_tx, sent_at)) = read_notification_rx.recv().await {
         channel_delay!(sent_at, &client_tx.to_string());
@@ -302,8 +363,7 @@ async fn client_reciever_looper(
             client_tx,
             clients_tx.clone(),
             expired_queue.clone(),
-            max_shards,
-            delivery_mode,
+            options,
         )
         .await;
     }
@@ -314,18 +374,23 @@ const RETRY_PER_CLIENT_CONCURRENCY: usize = 256;
 const RETRY_PER_NOTIFICATION_CONCURRENCY: usize = 32;
 const RETRY_PER_TARGET_CONCURRENCY: usize = 8;
 
-fn ingest_backfill(clients_tx: &Arc<ReaderMap>, client_id: &ClientId, notifs: &[NotificationData]) {
+fn ingest_backfill(
+    clients_tx: &Arc<ReaderMap>,
+    client_id: &ClientId,
+    notifs: Vec<NotificationData>,
+    policy: DeliveryPolicy,
+) {
+    let notifs = claim_read_batch(clients_tx, client_id, notifs, policy);
     if notifs.is_empty() {
         return;
     }
-    advance_cursor(clients_tx, client_id, notifs);
     let (_, actives) = snapshot_session_actives(clients_tx, client_id);
     if actives.is_empty() {
         return;
     }
     for active in actives {
         let mut guard = active.lock();
-        for n in notifs {
+        for n in &notifs {
             if guard.try_claim_total(n) {
                 TOTAL_NOTIFICATIONS.with_label_values(&[&n.category]).inc();
             }
@@ -339,6 +404,7 @@ async fn backfill_new_entries(
     redis_pool: &Arc<RedisConnectionPool>,
     clients_tx: &Arc<ReaderMap>,
     max_shards: u64,
+    policy: DeliveryPolicy,
 ) {
     let mut by_shard: Vec<Vec<(ClientId, StreamEntry)>> =
         (0..max_shards as usize).map(|_| Vec::new()).collect();
@@ -362,7 +428,7 @@ async fn backfill_new_entries(
                 match read_client_notifications(&redis_pool, items, &shard).await {
                     Ok(results) => {
                         for (client_id, notifs) in results {
-                            ingest_backfill(&clients_tx, &client_id, &notifs);
+                            ingest_backfill(&clients_tx, &client_id, notifs, policy);
                         }
                     }
                     Err(err) => error!(
@@ -388,6 +454,7 @@ async fn retry_pending_in_memory(
     redis_pool: &Arc<RedisConnectionPool>,
     clients_tx: &Arc<ReaderMap>,
     expired_queue: &ExpiredQueue,
+    policy: DeliveryPolicy,
 ) {
     let mut work: Vec<PendingClientWork> = Vec::new();
     for entry in clients_tx.iter() {
@@ -443,7 +510,7 @@ async fn retry_pending_in_memory(
                                         notification.stream_id.inner(),
                                         ExpiredMeta {
                                             category: notification.category.clone(),
-                                            reason: reason.as_str(),
+                                            reason: CleanupReason::Expired(reason),
                                         },
                                         "retry",
                                     );
@@ -454,6 +521,14 @@ async fn retry_pending_in_memory(
 
                             let attempt = {
                                 let mut guard = active.lock();
+                                if !guard.try_claim_push(&notification.id, policy.push_cap) {
+                                    return;
+                                }
+                                if guard.try_claim_total(&notification) {
+                                    TOTAL_NOTIFICATIONS
+                                        .with_label_values(&[&notification.category])
+                                        .inc();
+                                }
                                 if guard.try_claim_retry(&notification.id) {
                                     RETRIED_NOTIFICATIONS
                                         .with_label_values(&[&notification.category])
@@ -462,8 +537,8 @@ async fn retry_pending_in_memory(
                                 guard.attempt(&notification.id)
                             };
 
-                            stream::iter(txs.into_iter())
-                                .for_each_concurrent(RETRY_PER_TARGET_CONCURRENCY, |client_tx| {
+                            let pushed = stream::iter(txs.into_iter())
+                                .map(|client_tx| {
                                     let active = active.clone();
                                     let notification = notification.clone();
                                     let notification_id = notification.id.clone();
@@ -476,14 +551,33 @@ async fn retry_pending_in_memory(
                                         )
                                         .await
                                         {
-                                            Ok(()) => active
-                                                .lock()
-                                                .mark_sent(&notification_id, Utc::now()),
-                                            Err(err) => warn!("[Send Failed] : {}", err),
+                                            Ok(()) => {
+                                                active
+                                                    .lock()
+                                                    .mark_sent(&notification_id, Utc::now());
+                                                true
+                                            }
+                                            Err(err) => {
+                                                warn!("[Send Failed] : {}", err);
+                                                false
+                                            }
                                         }
                                     }
                                 })
+                                .buffer_unordered(RETRY_PER_TARGET_CONCURRENCY)
+                                .fold(false, |pushed, sent| async move { pushed || sent })
                                 .await;
+
+                            settle_push_round(
+                                policy,
+                                clients_tx,
+                                &expired_queue,
+                                &client_id,
+                                &shard,
+                                &active,
+                                &notification,
+                                pushed,
+                            );
                         }
                     })
                     .await;
@@ -498,9 +592,10 @@ async fn full_sweep(
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
     max_shards: u64,
+    policy: DeliveryPolicy,
 ) {
-    backfill_new_entries(&redis_pool, &clients_tx, max_shards).await;
-    retry_pending_in_memory(&redis_pool, &clients_tx, &expired_queue).await;
+    backfill_new_entries(&redis_pool, &clients_tx, max_shards, policy).await;
+    retry_pending_in_memory(&redis_pool, &clients_tx, &expired_queue, policy).await;
 }
 
 async fn sweep_looper(
@@ -509,6 +604,7 @@ async fn sweep_looper(
     expired_queue: ExpiredQueue,
     max_shards: u64,
     delay: Duration,
+    policy: DeliveryPolicy,
 ) {
     loop {
         full_sweep(
@@ -516,6 +612,7 @@ async fn sweep_looper(
             clients_tx.clone(),
             expired_queue.clone(),
             max_shards,
+            policy,
         )
         .await;
         sleep(delay).await;
@@ -527,9 +624,10 @@ async fn retry_looper(
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
     delay: Duration,
+    policy: DeliveryPolicy,
 ) {
     loop {
-        retry_pending_in_memory(&redis_pool, &clients_tx, &expired_queue).await;
+        retry_pending_in_memory(&redis_pool, &clients_tx, &expired_queue, policy).await;
         sleep(delay).await;
     }
 }
@@ -578,6 +676,34 @@ fn advance_cursor(clients_tx: &Arc<ReaderMap>, client_id: &ClientId, notifs: &[N
     }
 }
 
+fn claim_read_batch(
+    clients_tx: &Arc<ReaderMap>,
+    client_id: &ClientId,
+    notifs: Vec<NotificationData>,
+    policy: DeliveryPolicy,
+) -> Vec<NotificationData> {
+    if !policy.guarantee.removes_on_push() {
+        advance_cursor(clients_tx, client_id, &notifs);
+        return notifs;
+    }
+    let Some(entry) = clients_tx.get(client_id) else {
+        return Vec::new();
+    };
+    let mut cursor = entry.value().last_read_id.lock();
+    let claimed: Vec<NotificationData> = notifs
+        .into_iter()
+        .filter(|n| !is_stream_id_less_or_eq(&n.stream_id.inner(), &cursor.inner()))
+        .collect();
+    if let Some(max_claimed) = claimed
+        .iter()
+        .map(|n| n.stream_id.inner())
+        .reduce(|a, b| max_stream_id(&a, &b))
+    {
+        *cursor = StreamEntry(max_claimed);
+    }
+    claimed
+}
+
 fn read_cursor(clients_tx: &Arc<ReaderMap>, client_id: &ClientId) -> StreamEntry {
     clients_tx
         .get(client_id)
@@ -591,6 +717,7 @@ async fn active_notification_dispatch(
     clients_tx: &Arc<ReaderMap>,
     client_id: &ClientId,
     shard: &Shard,
+    policy: DeliveryPolicy,
 ) -> Option<(Vec<NotificationData>, Arc<Mutex<ActiveNotification>>)> {
     let cursor = read_cursor(clients_tx, client_id);
     let notifications = read_client_notification(redis_pool, client_id, shard, &cursor)
@@ -606,7 +733,7 @@ async fn active_notification_dispatch(
         return None;
     }
 
-    advance_cursor(clients_tx, client_id, &notifications);
+    let notifications = claim_read_batch(clients_tx, client_id, notifications, policy);
 
     for active in all_actives {
         active.lock().update(notifications.to_owned());
@@ -615,6 +742,7 @@ async fn active_notification_dispatch(
     primary_active.map(|active| (notifications, active))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_and_send_notifications(
     redis_pool: &RedisConnectionPool,
     clients_tx: &Arc<ReaderMap>,
@@ -623,24 +751,30 @@ async fn dispatch_and_send_notifications(
     shard: &Shard,
     target_client_txs: &[ClientTx],
     source: &'static str,
+    policy: DeliveryPolicy,
 ) {
     let Some((notifications, active)) =
-        active_notification_dispatch(redis_pool, clients_tx, client_id, shard).await
+        active_notification_dispatch(redis_pool, clients_tx, client_id, shard, policy).await
     else {
         return;
     };
 
     for notification in notifications {
-        let (count_total, expiry_reason, attempt) = {
+        let expired = notification.ttl.inner() < Utc::now();
+        let (count_total, expiry_reason, attempt, push_claimed) = {
             let mut guard = active.lock();
+            if !guard.0.contains_key(&notification.id) {
+                continue;
+            }
             let ct = guard.try_claim_total(&notification);
-            let reason = if notification.ttl.inner() < Utc::now() {
+            let reason = if expired {
                 guard.try_claim_expired_with_reason(&notification.id)
             } else {
                 None
             };
             let attempt = guard.attempt(&notification.id);
-            (ct, reason, attempt)
+            let push_claimed = !expired && guard.try_claim_push(&notification.id, policy.push_cap);
+            (ct, reason, attempt, push_claimed)
         };
 
         if count_total {
@@ -649,7 +783,7 @@ async fn dispatch_and_send_notifications(
                 .inc();
         }
 
-        if notification.ttl.inner() < Utc::now() {
+        if expired {
             if let Some(reason) = expiry_reason {
                 try_push_expired(
                     expired_queue,
@@ -658,20 +792,32 @@ async fn dispatch_and_send_notifications(
                     notification.stream_id.inner(),
                     ExpiredMeta {
                         category: notification.category.clone(),
-                        reason: reason.as_str(),
+                        reason: CleanupReason::Expired(reason),
                     },
                     "dispatch",
                 );
             }
-        } else {
+        } else if push_claimed {
+            let mut pushed = false;
             for client_tx in target_client_txs {
                 match send_notification(client_tx, notification.to_owned(), source, attempt).await {
                     Ok(()) => {
                         active.lock().mark_sent(&notification.id, Utc::now());
+                        pushed = true;
                     }
                     Err(err) => warn!("[Send Failed] : {}", err),
                 }
             }
+            settle_push_round(
+                policy,
+                clients_tx,
+                expired_queue,
+                client_id,
+                shard,
+                &active,
+                &notification,
+                pushed,
+            );
         }
     }
 }
@@ -685,6 +831,7 @@ async fn active_notification(
         NotificationMessage,
         DateTime<Utc>,
     )>,
+    policy: DeliveryPolicy,
 ) {
     while let Some((_, message, sent_at)) = active_notification_receiver_stream.recv().await {
         let NotificationMessage {
@@ -732,6 +879,7 @@ async fn active_notification(
                 &shard,
                 &all_clients_tx,
                 "pubsub_fresh",
+                policy,
             )
             .await;
         } else {
@@ -747,6 +895,7 @@ async fn active_notification_looper(
     clients_tx: Arc<ReaderMap>,
     expired_queue: ExpiredQueue,
     max_shards: u64,
+    policy: DeliveryPolicy,
 ) {
     let pubsub_channel_key = pubsub_channel_key();
     loop {
@@ -764,6 +913,7 @@ async fn active_notification_looper(
                     clients_tx.clone(),
                     expired_queue.clone(),
                     &mut active_notification_receiver_stream,
+                    policy,
                 )
                 .await;
                 error!(
@@ -783,6 +933,7 @@ async fn active_notification_looper(
             clients_tx.clone(),
             expired_queue.clone(),
             max_shards,
+            policy,
         )
         .await;
 
@@ -801,12 +952,13 @@ pub async fn run_notification_reader(
     expired_cleanup_delay_millis: u64,
     max_shards: u64,
     delivery_mode: DeliveryMode,
+    policy: DeliveryPolicy,
 ) {
     let expired_queue = new_expired_queue();
 
     info!(
-        "[Notification Service] - delivery_mode: {}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}",
-        delivery_mode, sweep_delay_millis, retry_delay_millis, max_shards
+        "[Notification Service] - delivery_mode: {}, delivery_guarantee: {}, push_cap: {:?}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}",
+        delivery_mode, policy.guarantee, policy.push_cap, sweep_delay_millis, retry_delay_millis, max_shards
     );
 
     let rx_task = tokio::spawn(client_reciever_looper(
@@ -814,8 +966,11 @@ pub async fn run_notification_reader(
         read_notification_rx,
         clients_tx.clone(),
         expired_queue.clone(),
-        max_shards,
-        delivery_mode,
+        ReceiverOptions {
+            max_shards,
+            delivery_mode,
+            policy,
+        },
     ));
 
     let retry_task = delivery_mode.needs_independent_retry_loop().then(|| {
@@ -824,6 +979,7 @@ pub async fn run_notification_reader(
             clients_tx.clone(),
             expired_queue.clone(),
             Duration::from_millis(retry_delay_millis),
+            policy,
         ))
     });
 
@@ -839,6 +995,7 @@ pub async fn run_notification_reader(
         expired_queue.clone(),
         max_shards,
         Duration::from_millis(sweep_delay_millis),
+        policy,
     ));
 
     let active_notification_task = (delivery_mode == DeliveryMode::Pubsub).then(|| {
@@ -847,6 +1004,7 @@ pub async fn run_notification_reader(
             clients_tx.clone(),
             expired_queue.clone(),
             max_shards,
+            policy,
         ))
     });
 
@@ -870,4 +1028,110 @@ pub async fn run_notification_reader(
             error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
         }
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::redis::types::EntityData;
+    use std::num::NonZeroU32;
+
+    fn notification(stream_id: &str) -> NotificationData {
+        NotificationData {
+            stream_id: StreamEntry(stream_id.to_string()),
+            id: NotificationId(format!("id-{stream_id}")),
+            category: "TEST".to_string(),
+            title: String::new(),
+            body: String::new(),
+            show: String::new(),
+            created_at: Utc::now(),
+            ttl: Ttl(Utc::now() + chrono::Duration::minutes(5)),
+            entity: EntityData {
+                id: String::new(),
+                _type: String::new(),
+                data: String::new(),
+            },
+        }
+    }
+
+    fn reader_map_with_client(client_id: &ClientId) -> Arc<ReaderMap> {
+        let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
+        let (client_tx, _client_rx) = sync::mpsc::channel(1);
+        clients_tx.insert(
+            client_id.clone(),
+            ClientEntry {
+                shard: Shard(0),
+                last_read_id: Mutex::new(StreamEntry::default()),
+                sessions: SessionMap::Single((
+                    client_tx,
+                    Arc::new(Mutex::new(ActiveNotification::default())),
+                )),
+            },
+        );
+        clients_tx
+    }
+
+    fn stream_ids(notifs: &[NotificationData]) -> Vec<String> {
+        notifs.iter().map(|n| n.stream_id.inner()).collect()
+    }
+
+    #[test]
+    fn at_most_once_hands_each_entry_to_one_racing_read() {
+        let client_id = ClientId("c1".to_string());
+        let clients_tx = reader_map_with_client(&client_id);
+        let policy = DeliveryPolicy::new(DeliveryGuarantee::AtMostOnce, None);
+        let stale_read = vec![notification("1-0"), notification("2-0")];
+
+        let first = claim_read_batch(&clients_tx, &client_id, stale_read.clone(), policy);
+        let second = claim_read_batch(
+            &clients_tx,
+            &client_id,
+            [stale_read, vec![notification("3-0")]].concat(),
+            policy,
+        );
+
+        assert_eq!(stream_ids(&first), vec!["1-0", "2-0"]);
+        assert_eq!(stream_ids(&second), vec!["3-0"]);
+        assert_eq!(read_cursor(&clients_tx, &client_id).inner(), "3-0");
+    }
+
+    #[test]
+    fn at_least_once_passes_racing_reads_through() {
+        let client_id = ClientId("c1".to_string());
+        let clients_tx = reader_map_with_client(&client_id);
+        let policy = DeliveryPolicy::new(DeliveryGuarantee::AtLeastOnce, None);
+        let stale_read = vec![notification("1-0"), notification("2-0")];
+
+        claim_read_batch(&clients_tx, &client_id, stale_read.clone(), policy);
+        let second = claim_read_batch(&clients_tx, &client_id, stale_read, policy);
+
+        assert_eq!(stream_ids(&second), vec!["1-0", "2-0"]);
+        assert_eq!(read_cursor(&clients_tx, &client_id).inner(), "2-0");
+    }
+
+    #[test]
+    fn push_cap_follows_guarantee() {
+        let at_most_once = DeliveryPolicy::new(DeliveryGuarantee::AtMostOnce, NonZeroU32::new(5));
+        let capped = DeliveryPolicy::new(DeliveryGuarantee::AtLeastOnce, NonZeroU32::new(3));
+        let uncapped = DeliveryPolicy::new(DeliveryGuarantee::AtLeastOnce, None);
+
+        assert_eq!(at_most_once.push_cap, Some(1));
+        assert_eq!(capped.push_cap, Some(3));
+        assert_eq!(uncapped.push_cap, None);
+    }
+
+    #[test]
+    fn push_claim_is_capped_and_released_on_failed_round() {
+        let n = notification("1-0");
+        let mut active = ActiveNotification::default();
+        active.update(vec![n.clone()]);
+
+        assert!(active.try_claim_push(&n.id, Some(1)));
+        assert!(!active.try_claim_push(&n.id, Some(1)));
+        active.release_push(&n.id);
+        assert!(active.try_claim_push(&n.id, Some(1)));
+
+        assert!(active.try_claim_push(&n.id, None));
+        assert!(!active.try_claim_push(&NotificationId("missing".to_string()), None));
+    }
 }
