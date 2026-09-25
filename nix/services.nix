@@ -81,7 +81,7 @@
           mkdir -p "$provisioning/datasources" "$provisioning/dashboards" data/grafana/data
 
           ln -sfn ${grafanaDatasource} "$provisioning/datasources/datasource.yaml"
-          printf 'apiVersion: 1\nproviders:\n  - name: bench\n    folder: Notification Service\n    type: file\n    allowUiUpdates: false\n    options:\n      path: %s/k8s/dashboards\n' \
+          printf 'apiVersion: 1\nproviders:\n  - name: bench\n    folder: Notification Service\n    type: file\n    allowUiUpdates: false\n    options:\n      path: %s/dashboards\n' \
             "$root" > "$provisioning/dashboards/dashboards.yaml"
 
           mkdir -p data/grafana/logs data/grafana/plugins data/grafana/data/png
