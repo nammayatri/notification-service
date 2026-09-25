@@ -18,15 +18,16 @@ use crate::{
     notification_latency,
     redis::{
         commands::{
-            clean_up_notifications_batch, read_client_notification, read_client_notifications,
+            clean_up_notifications_batch, publish_client_connect, read_client_notification,
+            read_client_notifications,
         },
         keys::*,
         types::NotificationData,
     },
     tools::prometheus::{
-        CHANNEL_DELAY, CLEANUP_PUSH_SKIPPED, CLIENT_SLOT_EVENTS, CONNECTED_CLIENTS,
-        EXPIRED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_LATENCY, PUBSUB_MESSAGES,
-        RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+        CHANNEL_DELAY, CLEANUP_PUSH_SKIPPED, CLIENT_CONNECT_MESSAGES, CLIENT_SLOT_EVENTS,
+        CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_LATENCY,
+        PUBSUB_MESSAGES, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
@@ -42,6 +43,7 @@ use tokio::{
     sync::{self, mpsc::Receiver},
     time::sleep,
 };
+use tonic::Status;
 use tracing::*;
 
 pub fn new_expired_queue() -> ExpiredQueue {
@@ -227,7 +229,7 @@ async fn handle_client_disconnection_or_failure(
 
     let should_remove = if let Some(mut entry) = clients_tx.get_mut(client_id) {
         match &mut entry.value_mut().sessions {
-            SessionMap::Single((owner, _, _)) if *owner == stream_token => {
+            SessionMap::Single((owner, _, _, _)) if *owner == stream_token => {
                 CLIENT_SLOT_EVENTS.with_label_values(&["removed"]).inc();
                 true
             }
@@ -270,12 +272,13 @@ async fn handle_client_disconnection_or_failure(
     );
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ReceiverOptions {
     max_shards: u64,
     delivery_mode: DeliveryMode,
     stale_disconnect_guard: bool,
     policy: DeliveryPolicy,
+    connect_claim_instance: Option<Arc<InstanceId>>,
 }
 
 #[macros::measure_duration]
@@ -292,6 +295,7 @@ async fn client_reciever(
         delivery_mode,
         stale_disconnect_guard,
         policy,
+        connect_claim_instance,
     } = options;
     match client_req {
         SenderType::ClientConnection((session_id, stream_token, client_tx)) => {
@@ -302,6 +306,8 @@ async fn client_reciever(
 
             let start = tokio::time::Instant::now();
 
+            let connected_at = Utc::now();
+            let is_single_session = session_id.is_none();
             let active_notification = Arc::new(Mutex::new(ActiveNotification::default()));
             let client_tx_for_catchup = client_tx.clone();
 
@@ -314,7 +320,12 @@ async fn client_reciever(
                             map.insert(session_id, (client_tx, active_notification));
                             SessionMap::Multi(map)
                         }
-                        None => SessionMap::Single((stream_token, client_tx, active_notification)),
+                        None => SessionMap::Single((
+                            stream_token,
+                            connected_at,
+                            client_tx,
+                            active_notification,
+                        )),
                     };
                     vacant.insert(ClientEntry {
                         shard: shard.clone(),
@@ -328,8 +339,12 @@ async fn client_reciever(
                             sessions.insert(session_id, (client_tx, active_notification));
                         }
                         (sessions @ SessionMap::Multi(_), None) => {
-                            *sessions =
-                                SessionMap::Single((stream_token, client_tx, active_notification));
+                            *sessions = SessionMap::Single((
+                                stream_token,
+                                connected_at,
+                                client_tx,
+                                active_notification,
+                            ));
                         }
                         (sessions @ SessionMap::Single(_), Some(session_id)) => {
                             let mut map = FxHashMap::default();
@@ -338,14 +353,35 @@ async fn client_reciever(
                         }
                         (sessions @ SessionMap::Single(_), None) => {
                             CLIENT_SLOT_EVENTS.with_label_values(&["replaced"]).inc();
-                            *sessions =
-                                SessionMap::Single((stream_token, client_tx, active_notification));
+                            *sessions = SessionMap::Single((
+                                stream_token,
+                                connected_at,
+                                client_tx,
+                                active_notification,
+                            ));
                         }
                     }
                 }
             }
 
             measure_latency_duration!("client_reciever_clients_tx_write", start);
+
+            if let (Some(instance_id), true) = (connect_claim_instance, is_single_session) {
+                let message = ClientConnectMessage {
+                    client_id: client_id.clone(),
+                    instance_id: (*instance_id).clone(),
+                    connected_at,
+                };
+                let redis_pool = redis_pool.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = publish_client_connect(&redis_pool, &message).await {
+                        error!(
+                            "[Notification Service Error] - publish_client_connect : {}",
+                            err
+                        );
+                    }
+                });
+            }
 
             if delivery_mode.needs_connect_catchup() {
                 let redis_pool = redis_pool.clone();
@@ -397,11 +433,81 @@ async fn client_reciever_looper(
             client_tx,
             clients_tx.clone(),
             expired_queue.clone(),
-            options,
+            options.clone(),
         )
         .await;
     }
     error!("[Notification Service Error] - read_notification_rx closed");
+}
+
+#[macros::measure_duration]
+fn evict_superseded_connection(
+    clients_tx: &Arc<ReaderMap>,
+    instance_id: &InstanceId,
+    message: ClientConnectMessage,
+) -> &'static str {
+    if message.instance_id == *instance_id {
+        return "self";
+    }
+
+    let Some((_, entry)) = clients_tx.remove_if(&message.client_id, |_, entry| {
+        matches!(
+            &entry.sessions,
+            SessionMap::Single((_, connected_at, _, _)) if *connected_at < message.connected_at
+        )
+    }) else {
+        return if clients_tx.contains_key(&message.client_id) {
+            "kept"
+        } else {
+            "not_held"
+        };
+    };
+
+    if let SessionMap::Single((_, _, client_tx, _)) = entry.sessions {
+        let _ = client_tx.try_send(Err(Status::already_exists(
+            "Superseded by a newer connection",
+        )));
+    }
+    CLIENT_SLOT_EVENTS
+        .with_label_values(&["evicted_by_peer"])
+        .inc();
+    "evicted"
+}
+
+async fn client_connect_looper(
+    redis_pool: Arc<RedisConnectionPool>,
+    clients_tx: Arc<ReaderMap>,
+    instance_id: Arc<InstanceId>,
+) {
+    let channel_key = client_connect_channel_key();
+    loop {
+        match redis_pool
+            .subscribe_channel::<ClientConnectMessage>(channel_key)
+            .await
+        {
+            Ok(mut client_connect_stream) => {
+                info!(
+                    "[Notification Service] - Subscribed to pubsub channel {}",
+                    channel_key
+                );
+                while let Some((_, message, _)) = client_connect_stream.recv().await {
+                    channel_delay!(message.connected_at, "client_connect_pubsub_delay");
+                    let outcome = evict_superseded_connection(&clients_tx, &instance_id, message);
+                    CLIENT_CONNECT_MESSAGES.with_label_values(&[outcome]).inc();
+                }
+                error!(
+                    "[Notification Service Error] - Client connect subscription dropped, re-subscribing"
+                );
+            }
+            Err(err) => {
+                error!(
+                    "[Notification Service Error] - Unable to Subscribe to Channel {} : {:?}",
+                    channel_key, err
+                );
+            }
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
 }
 
 const RETRY_PER_CLIENT_CONCURRENCY: usize = 256;
@@ -495,7 +601,7 @@ async fn retry_pending_in_memory(
         let shard = entry.value().shard.clone();
         let client_id = entry.key().clone();
         match &entry.value().sessions {
-            SessionMap::Single((_, tx, active)) => work.push(PendingClientWork {
+            SessionMap::Single((_, _, tx, active)) => work.push(PendingClientWork {
                 client_id,
                 shard,
                 target_client_txs: vec![tx.clone()],
@@ -683,7 +789,7 @@ fn snapshot_session_actives(
 ) {
     match clients_tx.get(client_id) {
         Some(entry) => match &entry.value().sessions {
-            SessionMap::Single((_, _, active)) => (Some(active.clone()), vec![active.clone()]),
+            SessionMap::Single((_, _, _, active)) => (Some(active.clone()), vec![active.clone()]),
             SessionMap::Multi(client) => {
                 let actives: Vec<_> = client.values().map(|(_, a)| a.clone()).collect();
                 let primary = actives.first().cloned();
@@ -881,7 +987,7 @@ async fn active_notification(
             Some(entry) => {
                 let shard = entry.value().shard.clone();
                 let txs = match &entry.value().sessions {
-                    SessionMap::Single((_, client_tx, _)) => vec![client_tx.clone()],
+                    SessionMap::Single((_, _, client_tx, _)) => vec![client_tx.clone()],
                     SessionMap::Multi(client) => {
                         client.values().map(|(tx, _)| tx.clone()).collect()
                     }
@@ -988,12 +1094,15 @@ pub async fn run_notification_reader(
     delivery_mode: DeliveryMode,
     stale_disconnect_guard: bool,
     policy: DeliveryPolicy,
+    single_connection_eviction: bool,
 ) {
     let expired_queue = new_expired_queue();
+    let connect_claim_instance =
+        single_connection_eviction.then(|| Arc::new(InstanceId::generate()));
 
     info!(
-        "[Notification Service] - delivery_mode: {}, delivery_guarantee: {}, push_cap: {:?}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}, stale_disconnect_guard: {}",
-        delivery_mode, policy.guarantee, policy.push_cap, sweep_delay_millis, retry_delay_millis, max_shards, stale_disconnect_guard
+        "[Notification Service] - delivery_mode: {}, delivery_guarantee: {}, push_cap: {:?}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}, stale_disconnect_guard: {}, single_connection_eviction: {:?}",
+        delivery_mode, policy.guarantee, policy.push_cap, sweep_delay_millis, retry_delay_millis, max_shards, stale_disconnect_guard, connect_claim_instance
     );
 
     let rx_task = tokio::spawn(client_reciever_looper(
@@ -1006,8 +1115,17 @@ pub async fn run_notification_reader(
             delivery_mode,
             stale_disconnect_guard,
             policy,
+            connect_claim_instance: connect_claim_instance.clone(),
         },
     ));
+
+    let client_connect_task = connect_claim_instance.map(|instance_id| {
+        tokio::spawn(client_connect_looper(
+            redis_pool.clone(),
+            clients_tx.clone(),
+            instance_id,
+        ))
+    });
 
     let retry_task = delivery_mode.needs_independent_retry_loop().then(|| {
         tokio::spawn(retry_looper(
@@ -1060,6 +1178,9 @@ pub async fn run_notification_reader(
         res = optional_task(active_notification_task) => {
             error!("[Notification Service Error] - [ACTIVE_NOTIFICATION_TASK] : {}", res);
         },
+        res = optional_task(client_connect_task) => {
+            error!("[Notification Service Error] - [CLIENT_CONNECT_TASK] : {}", res);
+        },
         _ = graceful_termination_signal_rx => {
             error!("[Notification Service Error] - [GRACEFUL_SHUT_DOWN]");
         }
@@ -1095,8 +1216,20 @@ mod tests {
     }
 
     fn reader_map_owned_by(client_id: &ClientId, owner: StreamToken) -> Arc<ReaderMap> {
+        let (clients_tx, _client_rx) = reader_map_connected_at(client_id, owner, Utc::now());
+        clients_tx
+    }
+
+    fn reader_map_connected_at(
+        client_id: &ClientId,
+        owner: StreamToken,
+        connected_at: DateTime<Utc>,
+    ) -> (
+        Arc<ReaderMap>,
+        sync::mpsc::Receiver<Result<crate::NotificationPayload, Status>>,
+    ) {
         let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
-        let (client_tx, _client_rx) = sync::mpsc::channel(1);
+        let (client_tx, client_rx) = sync::mpsc::channel(1);
         clients_tx.insert(
             client_id.clone(),
             ClientEntry {
@@ -1104,12 +1237,148 @@ mod tests {
                 last_read_id: Mutex::new(StreamEntry::default()),
                 sessions: SessionMap::Single((
                     owner,
+                    connected_at,
                     client_tx,
                     Arc::new(Mutex::new(ActiveNotification::default())),
                 )),
             },
         );
-        clients_tx
+        (clients_tx, client_rx)
+    }
+
+    fn connect_claim(
+        client_id: &ClientId,
+        instance_id: &InstanceId,
+        connected_at: DateTime<Utc>,
+    ) -> ClientConnectMessage {
+        ClientConnectMessage {
+            client_id: client_id.clone(),
+            instance_id: instance_id.clone(),
+            connected_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn newer_peer_connect_evicts_and_closes_the_local_stream() {
+        let client_id = ClientId("c1".to_string());
+        let local_connected_at = Utc::now();
+        let (clients_tx, mut client_rx) =
+            reader_map_connected_at(&client_id, StreamToken::next(), local_connected_at);
+        let claim = connect_claim(
+            &client_id,
+            &InstanceId::generate(),
+            local_connected_at + chrono::Duration::seconds(10),
+        );
+
+        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+
+        assert_eq!(outcome, "evicted");
+        assert!(clients_tx.get(&client_id).is_none());
+        let status = client_rx.recv().await.and_then(Result::err);
+        assert_eq!(status.map(|s| s.code()), Some(tonic::Code::AlreadyExists));
+        assert!(client_rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn late_peer_connect_keeps_the_newer_local_stream() {
+        let client_id = ClientId("c1".to_string());
+        let local_connected_at = Utc::now();
+        let (clients_tx, _client_rx) =
+            reader_map_connected_at(&client_id, StreamToken::next(), local_connected_at);
+        let claim = connect_claim(
+            &client_id,
+            &InstanceId::generate(),
+            local_connected_at - chrono::Duration::seconds(10),
+        );
+
+        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+
+        assert_eq!(outcome, "kept");
+        assert!(clients_tx.get(&client_id).is_some());
+    }
+
+    #[test]
+    fn own_connect_claim_is_ignored() {
+        let client_id = ClientId("c1".to_string());
+        let local_connected_at = Utc::now();
+        let (clients_tx, _client_rx) =
+            reader_map_connected_at(&client_id, StreamToken::next(), local_connected_at);
+        let instance_id = InstanceId::generate();
+        let claim = connect_claim(
+            &client_id,
+            &instance_id,
+            local_connected_at + chrono::Duration::seconds(10),
+        );
+
+        let outcome = evict_superseded_connection(&clients_tx, &instance_id, claim);
+
+        assert_eq!(outcome, "self");
+        assert!(clients_tx.get(&client_id).is_some());
+    }
+
+    #[test]
+    fn peer_connect_leaves_multi_session_clients_alone() {
+        let client_id = ClientId("c1".to_string());
+        let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
+        let (client_tx, _client_rx) = sync::mpsc::channel(1);
+        let mut sessions = FxHashMap::default();
+        sessions.insert(
+            SessionID("s1".to_string()),
+            (
+                client_tx,
+                Arc::new(Mutex::new(ActiveNotification::default())),
+            ),
+        );
+        clients_tx.insert(
+            client_id.clone(),
+            ClientEntry {
+                shard: Shard(0),
+                last_read_id: Mutex::new(StreamEntry::default()),
+                sessions: SessionMap::Multi(sessions),
+            },
+        );
+        let claim = connect_claim(
+            &client_id,
+            &InstanceId::generate(),
+            Utc::now() + chrono::Duration::seconds(10),
+        );
+
+        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+
+        assert_eq!(outcome, "kept");
+        assert!(clients_tx.get(&client_id).is_some());
+    }
+
+    #[test]
+    fn peer_connect_for_an_unknown_client_is_not_held() {
+        let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
+        let claim = connect_claim(
+            &ClientId("c1".to_string()),
+            &InstanceId::generate(),
+            Utc::now(),
+        );
+
+        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+
+        assert_eq!(outcome, "not_held");
+    }
+
+    #[test]
+    fn connect_claim_round_trips_as_camel_case_json() {
+        let claim = connect_claim(
+            &ClientId("c1".to_string()),
+            &InstanceId("pod-a".to_string()),
+            Utc::now(),
+        );
+
+        let json = serde_json::to_string(&claim).unwrap_or_default();
+
+        assert!(json.contains("\"clientId\":\"c1\""));
+        assert!(json.contains("\"instanceId\":\"pod-a\""));
+        assert_eq!(
+            serde_json::from_str::<ClientConnectMessage>(&json).ok(),
+            Some(claim)
+        );
     }
 
     #[tokio::test]

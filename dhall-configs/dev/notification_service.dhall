@@ -56,9 +56,10 @@ in {
     request_timeout_seconds = 60,
     retry_delay_millis = 1000,
     sweep_delay_millis = 1000,
-    expired_cleanup_delay_millis = 500,
+    expired_cleanup_delay_millis = 50,
     delivery_mode = DeliveryMode.Pubsub,
     stale_disconnect_guard = False,
     delivery_guarantee = DeliveryGuarantee.AtMostOnce,
-    max_delivery_attempts = None Natural
+    max_delivery_attempts = None Natural,
+    single_connection_eviction = False
 }

@@ -124,6 +124,16 @@ pub static PUBSUB_MESSAGES: once_cell::sync::Lazy<IntCounterVec> =
         .expect("Failed to register pubsub messages metrics")
     });
 
+pub static CLIENT_CONNECT_MESSAGES: once_cell::sync::Lazy<IntCounterVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_counter_vec!(
+            "client_connect_messages_total",
+            "Peer connect claims received by this pod, by what it did with its own entry",
+            &["outcome"]
+        )
+        .expect("Failed to register client connect messages metrics")
+    });
+
 pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
         register_int_counter_vec!(
@@ -281,6 +291,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(PUBSUB_MESSAGES.to_owned()))
         .expect("Failed to register pubsub messages metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(CLIENT_CONNECT_MESSAGES.to_owned()))
+        .expect("Failed to register client connect messages metrics");
 
     #[cfg(target_os = "linux")]
     prometheus

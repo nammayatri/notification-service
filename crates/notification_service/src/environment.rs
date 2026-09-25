@@ -41,6 +41,7 @@ pub struct AppConfig {
     pub stale_disconnect_guard: bool,
     pub delivery_guarantee: DeliveryGuarantee,
     pub max_delivery_attempts: Option<NonZeroU32>,
+    pub single_connection_eviction: bool,
 }
 
 #[derive(Clone)]
@@ -60,6 +61,7 @@ pub struct AppState {
     pub channel_buffer: usize,
     pub request_timeout_seconds: Duration,
     pub stale_disconnect_guard: bool,
+    pub single_connection_eviction: bool,
 }
 
 fn deserialize_url<'de, D>(deserializer: D) -> Result<Url, D::Error>
@@ -160,6 +162,7 @@ impl AppState {
             channel_buffer: app_config.channel_buffer,
             request_timeout_seconds: Duration::from_secs(request_timeout_seconds),
             stale_disconnect_guard: app_config.stale_disconnect_guard,
+            single_connection_eviction: app_config.single_connection_eviction,
         }
     }
 }
