@@ -496,9 +496,8 @@ fn evict_superseded_connection(
 
     count_unacked_on_close(&entry.sessions);
     if let SessionMap::Single((_, _, client_tx, _)) = entry.sessions {
-        let _ = client_tx.try_send(Err(Status::already_exists(
-            "Superseded by a newer connection",
-        )));
+        // UNAVAILABLE, not ALREADY_EXISTS: shipped apps reconnect instantly on ALREADY_EXISTS, which loops evictions.
+        let _ = client_tx.try_send(Err(Status::unavailable("Superseded by a newer connection")));
     }
     CLIENT_SLOT_EVENTS
         .with_label_values(&["evicted_by_peer"])
@@ -1314,7 +1313,7 @@ mod tests {
         assert_eq!(outcome, "evicted");
         assert!(clients_tx.get(&client_id).is_none());
         let status = client_rx.recv().await.and_then(Result::err);
-        assert_eq!(status.map(|s| s.code()), Some(tonic::Code::AlreadyExists));
+        assert_eq!(status.map(|s| s.code()), Some(tonic::Code::Unavailable));
         assert!(client_rx.recv().await.is_none());
     }
 

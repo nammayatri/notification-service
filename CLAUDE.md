@@ -50,7 +50,7 @@ The guarantee-dependent sites are `claim_read_batch` (called from `ingest_backfi
 A phone whose network drops leaves a ghost stream on its old pod, because the server's TCP peer is the load balancer rather than the phone. The phone then reconnects to another pod. When the flag is on, each pod gets a random `InstanceId` at boot:
 
 - On a `Single` connect, `client_reciever` publishes a `ClientConnectMessage {clientId, instanceId, connectedAt}` on the global `client_connect_channel_key()` channel after the map insert.
-- `client_connect_looper` runs in both delivery modes. `evict_superseded_connection` removes a local `Single` entry only if it connected earlier than the claim. It sends `ALREADY_EXISTS` down the old stream and drops the sender so the stream ends.
+- `client_connect_looper` runs in both delivery modes. `evict_superseded_connection` removes a local `Single` entry only if it connected earlier than the claim. It sends `UNAVAILABLE` down the old stream and drops the sender so the stream ends. The status must stay in the shipped apps' no-immediate-restart set (`CANCELLED`/`UNAVAILABLE` on both Android and iOS). `ALREADY_EXISTS` makes them reconnect at once, and the shipped Android's shared stream listener turns that into a reconnect loop.
 - `Multi` sessions and the pod's own claims are left alone. The `connectedAt` comparison stops a late claim from evicting a newer local stream.
 - Metrics: `client_connect_messages_total{outcome=self|evicted|kept|not_held}` and `client_slot_events_total{event="evicted_by_peer"}`.
 
