@@ -216,7 +216,7 @@ The notification reader (`crates/notification_service/src/reader.rs`) supports t
 
 - **gRPC `StreamPayload`** — bi-directional stream between client and `Notification Server`; carries notifications server→client and ACKs client→server.
 - **`client_reciever_looper`** — handles `ClientConnection` / `ClientDisconnection` events, mutating the `ReaderMap`.
-- **`sweep_looper`** — runs `full_sweep` every `sweep_delay_millis`: `backfill_new_entries` issues one batched `XREAD` per shard from each connected client's `last_read_id` cursor and ingests anything new into that client's `ActiveNotification`; then `retry_pending_in_memory` re-pushes every unacked entry it holds (no Redis read) and expires TTL'd ones.
+- **`sweep_looper`** — runs `full_sweep` every `sweep_delay_millis`: `backfill_new_entries` issues one batched `XREAD` per shard from each connected client's `last_read_id` cursor and ingests anything new into that client's `ActiveNotification`; then `retry_pending_in_memory` pushes the entries it holds (no Redis read) as `delivery_guarantee` allows, and expires TTL'd ones.
 - **`ActiveNotification`** — per-session in-memory tracker of unacked entries and their `sent_at`; drives resends, expiry, and the `attempt` label on `notification_duration_seconds`.
 - **Redis Streams** — durable queue per client (`XADD`/`XREAD`), entries cleaned up in batches on ACK or expiry.
 - **Redis Pub/Sub channel** (`pubsub_channel_key`) — fan-out signal that "client X has a new entry on its stream"; only subscribed in `Pubsub` mode.
@@ -239,7 +239,7 @@ Client <==gRPC stream==  Notification Server <==retry_looper (every retry_delay_
 Behavior:
 1. **On connect** — `client_reciever` spawns a `catchup` read of the client's stream and pushes whatever is pending, so a reconnecting client immediately sees what it missed.
 2. **On new notification** — publisher `XADD`s the stream and `PUBLISH`es on the pub/sub channel. `active_notification_looper` subscribes to that channel; for each message it reads the client's stream and pushes to all live `client_tx`s for that `ClientId` (single or multi-session), updating the per-session `ActiveNotification`. `pubsub_messages_total{outcome}` counts whether the message was for a client held by this pod (`local`), one it does not hold (`foreign`), or one whose entry has no live session (`no_session`) — the channel is global, so every pod receives every publish.
-3. **On ACK** — `active_notification.acknowledge(notification_id)` drops the entry.
+3. **On ACK** — `active_notification.acknowledge(notification_id)` drops the entry (under `AtMostOnce` it was already dropped at push time; see "Delivery guarantee").
 4. **Retry** — `retry_looper` runs `retry_pending_in_memory` every `retry_delay_millis`, resending unacked entries without touching Redis. The first resend of a notification increments `RETRIED_NOTIFICATIONS`.
 5. **Sweep** — `sweep_looper` still runs `full_sweep` every `sweep_delay_millis` as a safety net for missed pub/sub messages; set it long in this mode so it does not dominate Redis cost.
 
@@ -274,6 +274,27 @@ Trade-offs: simpler invariants (no pub/sub dependency, recovers automatically fr
 | Connect-time Redis read | yes (catch-up) | no (next sweep handles it) |
 | Pub/Sub dependency | required | none |
 | Default in dev dhall | ✅ | — |
+
+## **Delivery guarantee: `delivery_guarantee`**
+
+`delivery_mode` decides *how* the reader learns about a notification. `delivery_guarantee` is a separate setting that decides *how many times* it pushes one. Any mode works with any guarantee.
+
+| | `AtMostOnce` (default, same as old prod) | `AtLeastOnce` |
+|---|---|---|
+| After a successful push | Entry removed from every session's `ActiveNotification` and queued for batched `XDEL`; it is never pushed again | Entry stays in Redis and memory until an ACK arrives or the TTL expires |
+| `retry_pending_in_memory` | Pushes only entries whose earlier push failed on every target | Re-pushes every unacked entry each tick, up to `max_delivery_attempts` |
+| Racing reads (pubsub, catch-up, backfill) | Only the read that advances `last_read_id` past an entry passes it on | All reads pass their entries through |
+| ACK | Usually matches nothing and increments `unmatched_acks_total` | Removes the entry, `XDEL`s it and increments `delivered_notifications{category}` |
+| `max_delivery_attempts` | Ignored (the cap is always 1) | `None Natural` = unlimited; `Some n` stops re-pushing after `n` push rounds per session |
+
+Every push path claims an attempt with `ActiveNotification::try_claim_push` before it sends. That stops concurrent pushers from going over the cap between them. If a push round reaches no target, the claim is released and the next retry tick tries again. Entries whose attempts are used up stay in memory until their TTL passes, and are then cleaned up as `expired_notifications{reason="timeout"}`.
+
+Under `AtMostOnce`, the `XDEL` goes through the batched cleanup queue, which `expired_cleanup_delay_millis` flushes. A client that reconnects with a fresh cursor inside that window can receive the entry again.
+
+```dhall
+delivery_guarantee = DeliveryGuarantee.AtMostOnce,   -- or AtLeastOnce
+max_delivery_attempts = None Natural                 -- or Some 3 (AtLeastOnce only)
+```
 
 ## Setting up development environment
 

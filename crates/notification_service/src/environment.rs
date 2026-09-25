@@ -7,12 +7,12 @@
 */
 #![allow(clippy::expect_used)]
 
-use crate::common::types::{DeliveryMode, TokenOrigin};
+use crate::common::types::{DeliveryGuarantee, DeliveryMode, TokenOrigin};
 use reqwest::Url;
 use serde::Deserialize;
 use shared::redis::types::{RedisConnectionPool, RedisSettings};
 use shared::tools::logger::LoggerConfig;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::Duration};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct InternalAuthConfig {
@@ -38,6 +38,8 @@ pub struct AppConfig {
     pub channel_buffer: usize,
     pub request_timeout_seconds: u64,
     pub delivery_mode: DeliveryMode,
+    pub delivery_guarantee: DeliveryGuarantee,
+    pub max_delivery_attempts: Option<NonZeroU32>,
 }
 
 #[derive(Clone)]
@@ -49,6 +51,8 @@ pub struct AppState {
     pub sweep_delay_millis: u64,
     pub expired_cleanup_delay_millis: u64,
     pub delivery_mode: DeliveryMode,
+    pub delivery_guarantee: DeliveryGuarantee,
+    pub max_delivery_attempts: Option<NonZeroU32>,
     pub grpc_port: u16,
     pub http_server_port: u16,
     pub max_shards: u64,
@@ -86,6 +90,8 @@ impl AppState {
             sweep_delay_millis: app_config.sweep_delay_millis,
             expired_cleanup_delay_millis: app_config.expired_cleanup_delay_millis,
             delivery_mode: app_config.delivery_mode,
+            delivery_guarantee: app_config.delivery_guarantee,
+            max_delivery_attempts: app_config.max_delivery_attempts,
             grpc_port,
             http_server_port: app_config.http_server_port,
             max_shards: app_config.max_shards,
