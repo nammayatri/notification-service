@@ -102,18 +102,27 @@ impl ExpiryReason {
 #[derive(Debug, Clone)]
 pub struct AcknowledgedNotification {
     pub category: String,
-    pub stream_id: StreamEntry,
+    pub stream_id_to_delete: Option<StreamEntry>,
     pub sent_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AwaitingAck {
+    pub category: String,
+    pub sent_at: DateTime<Utc>,
+    pub ttl: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
-#[macros::impl_getter]
-pub struct ActiveNotification(pub FxHashMap<NotificationId, NotificationMeta>);
+pub struct ActiveNotification {
+    pending: FxHashMap<NotificationId, NotificationMeta>,
+    awaiting_ack: FxHashMap<NotificationId, AwaitingAck>,
+}
 
 impl ActiveNotification {
     pub fn update(&mut self, notifications: Vec<NotificationData>) {
         for notification in notifications {
-            self.0
+            self.pending
                 .entry(notification.id.clone())
                 .or_insert(NotificationMeta {
                     data: notification,
@@ -127,26 +136,74 @@ impl ActiveNotification {
     }
 
     pub fn count(&self) -> usize {
-        self.0.len()
+        self.pending.len()
+    }
+
+    pub fn contains(&self, notification_id: &NotificationId) -> bool {
+        self.pending.contains_key(notification_id)
     }
 
     pub fn acknowledge(
         &mut self,
         notification_id: &NotificationId,
     ) -> Option<AcknowledgedNotification> {
-        self.0
-            .remove(notification_id)
-            .map(|meta| AcknowledgedNotification {
+        if let Some(meta) = self.pending.remove(notification_id) {
+            return Some(AcknowledgedNotification {
                 category: meta.data.category,
-                stream_id: meta.data.stream_id,
+                stream_id_to_delete: Some(meta.data.stream_id),
                 sent_at: meta.sent_at,
+            });
+        }
+        self.awaiting_ack
+            .remove(notification_id)
+            .map(|awaiting| AcknowledgedNotification {
+                category: awaiting.category,
+                stream_id_to_delete: None,
+                sent_at: Some(awaiting.sent_at),
             })
     }
 
+    pub fn discard(&mut self, notification_id: &NotificationId) {
+        self.pending.remove(notification_id);
+    }
+
+    pub fn await_ack(&mut self, notification_id: &NotificationId) {
+        if let Some(meta) = self.pending.remove(notification_id) {
+            self.awaiting_ack.insert(
+                notification_id.clone(),
+                AwaitingAck {
+                    category: meta.data.category,
+                    sent_at: meta.sent_at.unwrap_or_else(Utc::now),
+                    ttl: meta.data.ttl.inner(),
+                },
+            );
+        }
+    }
+
+    pub fn expire_awaiting_ack(&mut self, now: DateTime<Utc>) -> Vec<String> {
+        let mut expired = Vec::new();
+        self.awaiting_ack.retain(|_, awaiting| {
+            if awaiting.ttl < now {
+                expired.push(awaiting.category.clone());
+                false
+            } else {
+                true
+            }
+        });
+        expired
+    }
+
+    pub fn drain_awaiting_ack(&mut self) -> Vec<String> {
+        self.awaiting_ack
+            .drain()
+            .map(|(_, awaiting)| awaiting.category)
+            .collect()
+    }
+
     pub fn try_claim_total(&mut self, notification: &NotificationData) -> bool {
-        match self.0.get_mut(&notification.id) {
+        match self.pending.get_mut(&notification.id) {
             None => {
-                self.0.insert(
+                self.pending.insert(
                     notification.id.clone(),
                     NotificationMeta {
                         data: notification.clone(),
@@ -168,7 +225,7 @@ impl ActiveNotification {
     }
 
     pub fn mark_sent(&mut self, notification_id: &NotificationId, now: DateTime<Utc>) {
-        if let Some(meta) = self.0.get_mut(notification_id) {
+        if let Some(meta) = self.pending.get_mut(notification_id) {
             meta.sent_at = Some(now);
         }
     }
@@ -178,7 +235,7 @@ impl ActiveNotification {
         notification_id: &NotificationId,
         push_cap: Option<u32>,
     ) -> bool {
-        match self.0.get_mut(notification_id) {
+        match self.pending.get_mut(notification_id) {
             Some(meta) if push_cap.is_none_or(|cap| meta.push_count < cap) => {
                 meta.push_count += 1;
                 true
@@ -188,20 +245,20 @@ impl ActiveNotification {
     }
 
     pub fn release_push(&mut self, notification_id: &NotificationId) {
-        if let Some(meta) = self.0.get_mut(notification_id) {
+        if let Some(meta) = self.pending.get_mut(notification_id) {
             meta.push_count = meta.push_count.saturating_sub(1);
         }
     }
 
     pub fn attempt(&self, notification_id: &NotificationId) -> &'static str {
-        match self.0.get(notification_id) {
+        match self.pending.get(notification_id) {
             Some(meta) if meta.sent_at.is_some() => "repeat",
             _ => "first",
         }
     }
 
     pub fn try_claim_retry(&mut self, notification_id: &NotificationId) -> bool {
-        match self.0.get_mut(notification_id) {
+        match self.pending.get_mut(notification_id) {
             Some(meta) if meta.sent_at.is_some() && !meta.retry_counted => {
                 meta.retry_counted = true;
                 true
@@ -211,7 +268,7 @@ impl ActiveNotification {
     }
 
     pub fn try_claim_expired(&mut self, notification_id: &NotificationId) -> bool {
-        match self.0.get_mut(notification_id) {
+        match self.pending.get_mut(notification_id) {
             Some(meta) if !meta.expired_counted => {
                 meta.expired_counted = true;
                 true
@@ -224,7 +281,7 @@ impl ActiveNotification {
         &mut self,
         notification_id: &NotificationId,
     ) -> Option<ExpiryReason> {
-        match self.0.get_mut(notification_id) {
+        match self.pending.get_mut(notification_id) {
             Some(meta) if !meta.expired_counted => {
                 meta.expired_counted = true;
                 Some(if meta.sent_at.is_some() {
@@ -239,11 +296,11 @@ impl ActiveNotification {
 
     pub fn refresh(&mut self) {
         let now = Utc::now();
-        self.0.retain(|_, meta| meta.data.ttl.inner() >= now);
+        self.pending.retain(|_, meta| meta.data.ttl.inner() >= now);
     }
 
     pub fn pending_redelivery(&self) -> Vec<NotificationData> {
-        self.0.values().map(|m| m.data.clone()).collect()
+        self.pending.values().map(|m| m.data.clone()).collect()
     }
 }
 

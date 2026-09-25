@@ -524,19 +524,21 @@ impl Notification for NotificationService {
                                 DELIVERED_NOTIFICATIONS
                                     .with_label_values(&[&acked.category])
                                     .inc();
-                                let _ = clean_up_notification(
-                                    &redis_pool,
-                                    &client_id_clone,
-                                    &acked.stream_id.inner(),
-                                    &shard,
-                                )
-                                .await
-                                .map_err(|err| {
-                                    error!(
-                                        "[Notification Service Error] - Error in clean_up_notification : {}",
-                                        err
+                                if let Some(stream_id) = acked.stream_id_to_delete {
+                                    let _ = clean_up_notification(
+                                        &redis_pool,
+                                        &client_id_clone,
+                                        &stream_id.inner(),
+                                        &shard,
                                     )
-                                });
+                                    .await
+                                    .map_err(|err| {
+                                        error!(
+                                            "[Notification Service Error] - Error in clean_up_notification : {}",
+                                            err
+                                        )
+                                    });
+                                }
                             } else {
                                 UNMATCHED_ACKS.inc();
                             }

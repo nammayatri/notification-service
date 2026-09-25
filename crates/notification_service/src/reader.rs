@@ -27,7 +27,7 @@ use crate::{
     tools::prometheus::{
         CHANNEL_DELAY, CLEANUP_PUSH_SKIPPED, CLIENT_CONNECT_MESSAGES, CLIENT_SLOT_EVENTS,
         CONNECTED_CLIENTS, EXPIRED_NOTIFICATIONS, MEASURE_DURATION, NOTIFICATION_LATENCY,
-        PUBSUB_MESSAGES, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS,
+        PUBSUB_MESSAGES, RETRIED_NOTIFICATIONS, TOTAL_NOTIFICATIONS, UNACKED_NOTIFICATIONS,
     },
 };
 use anyhow::Result;
@@ -106,6 +106,24 @@ fn push_delivered_cleanup(
         );
 }
 
+fn count_unacked(categories: Vec<String>, reason: &'static str) {
+    for category in categories {
+        UNACKED_NOTIFICATIONS
+            .with_label_values(&[&category, reason])
+            .inc();
+    }
+}
+
+fn count_unacked_on_close(sessions: &SessionMap) {
+    let primary = match sessions {
+        SessionMap::Single((_, _, _, active)) => Some(active),
+        SessionMap::Multi(sessions) => sessions.values().next().map(|(_, active)| active),
+    };
+    if let Some(active) = primary {
+        count_unacked(active.lock().drain_awaiting_ack(), "stream_closed");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn settle_push_round(
     policy: DeliveryPolicy,
@@ -122,9 +140,17 @@ fn settle_push_round(
         return;
     }
     if policy.guarantee.removes_on_push() {
-        let (_, actives) = snapshot_session_actives(clients_tx, client_id);
+        let (primary, actives) = snapshot_session_actives(clients_tx, client_id);
         for session_active in actives {
-            session_active.lock().acknowledge(&notification.id);
+            let is_primary = primary
+                .as_ref()
+                .is_some_and(|primary| Arc::ptr_eq(primary, &session_active));
+            let mut guard = session_active.lock();
+            if is_primary {
+                guard.await_ack(&notification.id);
+            } else {
+                guard.discard(&notification.id);
+            }
         }
         push_delivered_cleanup(cleanup_queue, client_id, shard.inner(), notification);
     }
@@ -263,7 +289,9 @@ async fn handle_client_disconnection_or_failure(
     };
 
     if should_remove {
-        clients_tx.remove(client_id);
+        if let Some((_, entry)) = clients_tx.remove(client_id) {
+            count_unacked_on_close(&entry.sessions);
+        }
     }
 
     measure_latency_duration!(
@@ -339,6 +367,7 @@ async fn client_reciever(
                             sessions.insert(session_id, (client_tx, active_notification));
                         }
                         (sessions @ SessionMap::Multi(_), None) => {
+                            count_unacked_on_close(sessions);
                             *sessions = SessionMap::Single((
                                 stream_token,
                                 connected_at,
@@ -347,12 +376,14 @@ async fn client_reciever(
                             ));
                         }
                         (sessions @ SessionMap::Single(_), Some(session_id)) => {
+                            count_unacked_on_close(sessions);
                             let mut map = FxHashMap::default();
                             map.insert(session_id, (client_tx, active_notification));
                             *sessions = SessionMap::Multi(map);
                         }
                         (sessions @ SessionMap::Single(_), None) => {
                             CLIENT_SLOT_EVENTS.with_label_values(&["replaced"]).inc();
+                            count_unacked_on_close(sessions);
                             *sessions = SessionMap::Single((
                                 stream_token,
                                 connected_at,
@@ -463,6 +494,7 @@ fn evict_superseded_connection(
         };
     };
 
+    count_unacked_on_close(&entry.sessions);
     if let SessionMap::Single((_, _, client_tx, _)) = entry.sessions {
         let _ = client_tx.try_send(Err(Status::already_exists(
             "Superseded by a newer connection",
@@ -626,7 +658,14 @@ async fn retry_pending_in_memory(
             let _redis_pool = redis_pool.clone();
             let expired_queue = expired_queue.clone();
             async move {
-                let pending = w.active.lock().pending_redelivery();
+                let (pending, unacked) = {
+                    let mut guard = w.active.lock();
+                    (
+                        guard.pending_redelivery(),
+                        guard.expire_awaiting_ack(Utc::now()),
+                    )
+                };
+                count_unacked(unacked, "ttl");
                 if pending.is_empty() {
                     return;
                 }
@@ -655,7 +694,7 @@ async fn retry_pending_in_memory(
                                         "retry",
                                     );
                                 }
-                                active.lock().acknowledge(&notification.id);
+                                active.lock().discard(&notification.id);
                                 return;
                             }
 
@@ -903,7 +942,7 @@ async fn dispatch_and_send_notifications(
         let expired = notification.ttl.inner() < Utc::now();
         let (count_total, expiry_reason, attempt, push_claimed) = {
             let mut guard = active.lock();
-            if !guard.0.contains_key(&notification.id) {
+            if !guard.contains(&notification.id) {
                 continue;
             }
             let ct = guard.try_claim_total(&notification);
@@ -1479,5 +1518,148 @@ mod tests {
 
         assert!(active.try_claim_push(&n.id, None));
         assert!(!active.try_claim_push(&NotificationId("missing".to_string()), None));
+    }
+
+    fn primary_active(
+        clients_tx: &Arc<ReaderMap>,
+        client_id: &ClientId,
+    ) -> Arc<Mutex<ActiveNotification>> {
+        snapshot_session_actives(clients_tx, client_id)
+            .0
+            .expect("client has a session")
+    }
+
+    fn pushed(active: &Arc<Mutex<ActiveNotification>>, n: &NotificationData) {
+        let mut guard = active.lock();
+        guard.update(vec![n.clone()]);
+        guard.mark_sent(&n.id, Utc::now());
+    }
+
+    #[test]
+    fn at_most_once_ack_after_push_is_matched_without_a_second_delete() {
+        let client_id = ClientId("c1".to_string());
+        let clients_tx = reader_map_with_client(&client_id);
+        let cleanup_queue = new_expired_queue();
+        let active = primary_active(&clients_tx, &client_id);
+        let n = notification("1-0");
+        pushed(&active, &n);
+
+        settle_push_round(
+            DeliveryPolicy::new(DeliveryGuarantee::AtMostOnce, None),
+            &clients_tx,
+            &cleanup_queue,
+            &client_id,
+            &Shard(0),
+            &active,
+            &n,
+            true,
+        );
+
+        assert_eq!(active.lock().count(), 0);
+        assert!(cleanup_queue.get(&client_id).is_some());
+        let acked = active.lock().acknowledge(&n.id);
+        assert_eq!(acked.as_ref().map(|a| a.category.as_str()), Some("TEST"));
+        assert!(acked.as_ref().is_some_and(|a| a.sent_at.is_some()));
+        assert!(acked.is_some_and(|a| a.stream_id_to_delete.is_none()));
+        assert!(active.lock().acknowledge(&n.id).is_none());
+    }
+
+    #[test]
+    fn at_least_once_ack_matches_pending_and_asks_for_the_delete() {
+        let n = notification("1-0");
+        let mut active = ActiveNotification::default();
+        active.update(vec![n.clone()]);
+        active.mark_sent(&n.id, Utc::now());
+
+        let acked = active.acknowledge(&n.id);
+
+        assert_eq!(
+            acked.and_then(|a| a.stream_id_to_delete).map(|s| s.inner()),
+            Some("1-0".to_string())
+        );
+    }
+
+    #[test]
+    fn awaiting_ack_expires_once_the_ttl_passes() {
+        let mut stale = notification("1-0");
+        stale.ttl = Ttl(Utc::now() - chrono::Duration::seconds(1));
+        let fresh = notification("2-0");
+        let mut active = ActiveNotification::default();
+        active.update(vec![stale.clone(), fresh.clone()]);
+        active.await_ack(&stale.id);
+        active.await_ack(&fresh.id);
+
+        let expired = active.expire_awaiting_ack(Utc::now());
+
+        assert_eq!(expired, vec!["TEST".to_string()]);
+        assert!(active.acknowledge(&stale.id).is_none());
+        assert!(active.acknowledge(&fresh.id).is_some());
+    }
+
+    #[tokio::test]
+    async fn disconnect_counts_unacked_pushes_as_stream_closed() {
+        let client_id = ClientId("c1".to_string());
+        let owner = StreamToken::next();
+        let clients_tx = reader_map_owned_by(&client_id, owner);
+        let mut n = notification("1-0");
+        n.category = "DISCONNECT_UNACKED_TEST".to_string();
+        let active = primary_active(&clients_tx, &client_id);
+        pushed(&active, &n);
+        active.lock().await_ack(&n.id);
+        let counter =
+            UNACKED_NOTIFICATIONS.with_label_values(&["DISCONNECT_UNACKED_TEST", "stream_closed"]);
+        let before = counter.get();
+
+        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, owner, true)
+            .await;
+
+        assert_eq!(counter.get(), before + 1);
+    }
+
+    #[test]
+    fn at_most_once_keeps_awaiting_ack_only_on_the_primary_session() {
+        let client_id = ClientId("c1".to_string());
+        let clients_tx: Arc<ReaderMap> = Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
+        let mut sessions = FxHashMap::default();
+        for session in ["s1", "s2"] {
+            let (client_tx, _client_rx) = sync::mpsc::channel(1);
+            sessions.insert(
+                SessionID(session.to_string()),
+                (
+                    client_tx,
+                    Arc::new(Mutex::new(ActiveNotification::default())),
+                ),
+            );
+        }
+        clients_tx.insert(
+            client_id.clone(),
+            ClientEntry {
+                shard: Shard(0),
+                last_read_id: Mutex::new(StreamEntry::default()),
+                sessions: SessionMap::Multi(sessions),
+            },
+        );
+        let (primary, actives) = snapshot_session_actives(&clients_tx, &client_id);
+        let primary = primary.expect("client has a session");
+        let n = notification("1-0");
+        for active in &actives {
+            pushed(active, &n);
+        }
+
+        settle_push_round(
+            DeliveryPolicy::new(DeliveryGuarantee::AtMostOnce, None),
+            &clients_tx,
+            &new_expired_queue(),
+            &client_id,
+            &Shard(0),
+            &primary,
+            &n,
+            true,
+        );
+
+        for active in &actives {
+            let acked = active.lock().acknowledge(&n.id);
+            assert_eq!(acked.is_some(), Arc::ptr_eq(active, &primary));
+        }
     }
 }
