@@ -14,6 +14,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use strum_macros::{Display, EnumIter, EnumString};
 use tokio::sync::mpsc::Sender;
@@ -254,18 +255,28 @@ impl Default for StreamEntry {
 
 pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamToken(pub u64);
+
+impl StreamToken {
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 #[derive(Display)]
 pub enum SenderType {
     #[strum(to_string = "ClientConnection")]
-    ClientConnection((Option<SessionID>, ClientTx)),
+    ClientConnection((Option<SessionID>, StreamToken, ClientTx)),
 
     #[strum(to_string = "ClientDisconnection")]
-    ClientDisconnection(Option<SessionID>),
+    ClientDisconnection((Option<SessionID>, StreamToken)),
 }
 
 #[derive(Clone, Debug)]
 pub enum SessionMap {
-    Single((ClientTx, Arc<Mutex<ActiveNotification>>)),
+    Single((StreamToken, ClientTx, Arc<Mutex<ActiveNotification>>)),
     Multi(FxHashMap<SessionID, (ClientTx, Arc<Mutex<ActiveNotification>>)>),
 }
 

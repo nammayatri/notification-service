@@ -107,6 +107,7 @@ pub async fn run_server() -> Result<()> {
         app_state.expired_cleanup_delay_millis,
         app_state.max_shards,
         app_state.delivery_mode,
+        app_state.stale_disconnect_guard,
         DeliveryPolicy::new(
             app_state.delivery_guarantee,
             app_state.max_delivery_attempts,
