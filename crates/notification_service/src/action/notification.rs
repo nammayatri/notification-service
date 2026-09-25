@@ -500,7 +500,9 @@ impl Notification for NotificationService {
                                 Some(entry) => {
                                     let shard = entry.value().shard.clone();
                                     let active = match &entry.value().sessions {
-                                        SessionMap::Single((_, _, active)) => Some(active.clone()),
+                                        SessionMap::Single((_, _, _, active)) => {
+                                            Some(active.clone())
+                                        }
                                         SessionMap::Multi(sessions) => {
                                             sessions.values().next().map(|(_, a)| a.clone())
                                         }

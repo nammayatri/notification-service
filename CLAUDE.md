@@ -44,6 +44,15 @@ This setting is separate from `delivery_mode`. `DeliveryGuarantee = AtMostOnce |
 
 The guarantee-dependent sites are `claim_read_batch` (called from `ingest_backfill` and `active_notification_dispatch`), `try_claim_push` / `settle_push_round` in `dispatch_and_send_notifications` and `retry_pending_in_memory`, and `DeliveryPolicy::new`. Any new push path must claim through `try_claim_push` and finish with `settle_push_round`.
 
+## Single connection per client (`single_connection_eviction`)
+
+A phone whose network drops leaves a ghost stream on its old pod, because the server's TCP peer is the load balancer rather than the phone. The phone then reconnects to another pod. When the flag is on, each pod gets a random `InstanceId` at boot:
+
+- On a `Single` connect, `client_reciever` publishes a `ClientConnectMessage {clientId, instanceId, connectedAt}` on the global `client_connect_channel_key()` channel after the map insert.
+- `client_connect_looper` runs in both delivery modes. `evict_superseded_connection` removes a local `Single` entry only if it connected earlier than the claim. It sends `ALREADY_EXISTS` down the old stream and drops the sender so the stream ends.
+- `Multi` sessions and the pod's own claims are left alone. The `connectedAt` comparison stops a late claim from evicting a newer local stream.
+- Metrics: `client_connect_messages_total{outcome=self|evicted|kept|not_held}` and `client_slot_events_total{event="evicted_by_peer"}`.
+
 ## Sharding & locking
 
 Clients are sharded by `hash_uuid(client_id) % max_shards`. Each shard is a `MonitoredRwLock<FxHashMap<ClientId, SessionMap>>`. `SessionMap` is `Single((ClientTx, Arc<MonitoredRwLock<ActiveNotification>>))` or `Multi(FxHashMap<SessionID, …>)`. `MonitoredRwLock` wraps `tokio::sync::RwLock` with `RwLockName` / `RwLockOperation` instrumentation — preserve those labels when adding new lock sites; metrics depend on them.

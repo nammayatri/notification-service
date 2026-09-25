@@ -359,12 +359,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arcstr"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
-
-[[package]]
 name = "arrayvec"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1761,35 +1755,6 @@ dependencies = [
 
 [[package]]
 name = "fred"
-version = "6.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a15cc18b56395b8b15ffcdcea7fe8586e3a3ccb3d9dc3b9408800d9814efb08e"
-dependencies = [
- "arc-swap",
- "arcstr",
- "async-trait",
- "bytes",
- "bytes-utils",
- "cfg-if",
- "float-cmp",
- "futures",
- "lazy_static",
- "log",
- "parking_lot",
- "rand 0.8.6",
- "redis-protocol 4.1.0",
- "semver",
- "sha-1",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "tracing-futures",
- "url",
-]
-
-[[package]]
-name = "fred"
 version = "9.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3cdd5378252ea124b712e0ac55147d26ae3af575883b34b8423091a4c719606b"
@@ -1805,7 +1770,7 @@ dependencies = [
  "log",
  "parking_lot",
  "rand 0.8.6",
- "redis-protocol 5.0.1",
+ "redis-protocol",
  "semver",
  "socket2 0.5.10",
  "tokio",
@@ -3014,7 +2979,7 @@ dependencies = [
  "config",
  "console-subscriber",
  "dashmap",
- "fred 6.3.2",
+ "fred",
  "futures",
  "http-body 0.4.6",
  "hyper 0.14.32",
@@ -3670,20 +3635,6 @@ dependencies = [
 
 [[package]]
 name = "redis-protocol"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c31deddf734dc0a39d3112e73490e88b61a05e83e074d211f348404cee4d2c6"
-dependencies = [
- "bytes",
- "bytes-utils",
- "cookie-factory",
- "crc16",
- "log",
- "nom",
-]
-
-[[package]]
-name = "redis-protocol"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65deb7c9501fbb2b6f812a30d59c0253779480853545153a51d8e9e444ddc99f"
@@ -4139,17 +4090,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha-1"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5058ada175748e33390e40e872bd0fe59a19f265d0158daa551c5a88a76009c"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4236,7 +4176,7 @@ dependencies = [
  "aws-types",
  "chrono",
  "error-stack",
- "fred 9.4.0",
+ "fred",
  "futures",
  "google-cloud-storage",
  "macros",
@@ -4328,7 +4268,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "fred 9.4.0",
+ "fred",
  "governor",
  "notification_service",
  "prometheus",

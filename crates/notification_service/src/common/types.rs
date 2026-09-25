@@ -274,9 +274,33 @@ pub enum SenderType {
     ClientDisconnection((Option<SessionID>, StreamToken)),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InstanceId(pub String);
+
+impl InstanceId {
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientConnectMessage {
+    pub client_id: ClientId,
+    pub instance_id: InstanceId,
+    pub connected_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug)]
 pub enum SessionMap {
-    Single((StreamToken, ClientTx, Arc<Mutex<ActiveNotification>>)),
+    Single(
+        (
+            StreamToken,
+            DateTime<Utc>,
+            ClientTx,
+            Arc<Mutex<ActiveNotification>>,
+        ),
+    ),
     Multi(FxHashMap<SessionID, (ClientTx, Arc<Mutex<ActiveNotification>>)>),
 }
 

@@ -12,6 +12,7 @@ use crate::{
     tools::prometheus::MEASURE_DURATION,
 };
 use anyhow::Result;
+use fred::interfaces::PubsubInterface;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use shared::measure_latency_duration;
@@ -43,6 +44,22 @@ pub async fn get_client_id(
         .get_key_as_str(&client_details_key(token))
         .await?
         .map(ClientId))
+}
+
+#[macros::measure_duration]
+pub async fn publish_client_connect(
+    redis_pool: &RedisConnectionPool,
+    message: &ClientConnectMessage,
+) -> Result<()> {
+    redis_pool
+        .writer_pool
+        .next()
+        .publish::<(), _, _>(
+            client_connect_channel_key(),
+            serde_json::to_string(message)?,
+        )
+        .await?;
+    Ok(())
 }
 
 #[macros::measure_duration]

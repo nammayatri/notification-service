@@ -18,3 +18,7 @@ pub fn client_details_key(token: &str) -> String {
 pub fn pubsub_channel_key() -> &'static str {
     "active-notification"
 }
+
+pub fn client_connect_channel_key() -> &'static str {
+    "client-connect"
+}
