@@ -99,10 +99,21 @@ pub static DELIVERED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
 pub static UNMATCHED_ACKS: once_cell::sync::Lazy<IntCounter> = once_cell::sync::Lazy::new(|| {
     register_int_counter!(
         "unmatched_acks_total",
-        "ACKs matching no pending entry on this pod (already removed under AtMostOnce, already acked, or pushed by another pod)"
+        "ACKs matching no pending or awaiting-ack entry on this pod (already acked, pushed on an earlier stream, or pushed by another pod)"
     )
     .expect("Failed to register unmatched acks metrics")
 });
+
+pub static UNACKED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> = once_cell::sync::Lazy::new(
+    || {
+        register_int_counter_vec!(
+            "unacked_notifications_total",
+            "AtMostOnce pushes never acked, by category and whether the TTL passed or the stream closed first",
+            &["category", "reason"]
+        )
+        .expect("Failed to register unacked notifications metrics")
+    },
+);
 
 pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
@@ -271,6 +282,11 @@ pub fn prometheus_metrics() -> PrometheusMetrics {
         .registry
         .register(Box::new(UNMATCHED_ACKS.to_owned()))
         .expect("Failed to register unmatched acks metrics");
+
+    prometheus
+        .registry
+        .register(Box::new(UNACKED_NOTIFICATIONS.to_owned()))
+        .expect("Failed to register unacked notifications metrics");
 
     prometheus
         .registry
