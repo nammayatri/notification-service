@@ -312,7 +312,7 @@ impl Default for StreamEntry {
 
 pub type ClientTx = Sender<Result<NotificationPayload, Status>>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StreamToken(pub u64);
 
 impl StreamToken {
@@ -369,6 +369,8 @@ pub struct ClientEntry {
 }
 
 pub type ReaderMap = DashMap<ClientId, ClientEntry, FxBuildHasher>;
+
+pub type ParkedStreams = DashMap<StreamToken, ClientTx, FxBuildHasher>;
 
 #[derive(
     Debug, Clone, EnumString, EnumIter, Display, Serialize, Deserialize, Eq, Hash, PartialEq,

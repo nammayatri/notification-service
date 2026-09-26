@@ -43,7 +43,6 @@ use tokio::{
     sync::{self, mpsc::Receiver},
     time::sleep,
 };
-use tonic::Status;
 use tracing::*;
 
 pub fn new_expired_queue() -> ExpiredQueue {
@@ -246,6 +245,7 @@ async fn flush_expired_queue(redis_pool: &Arc<RedisConnectionPool>, expired_queu
 #[macros::measure_duration]
 async fn handle_client_disconnection_or_failure(
     clients_tx: Arc<ReaderMap>,
+    parked_streams: &ParkedStreams,
     client_id: &ClientId,
     session_id: &Option<SessionID>,
     stream_token: StreamToken,
@@ -253,7 +253,12 @@ async fn handle_client_disconnection_or_failure(
 ) {
     let start = tokio::time::Instant::now();
 
-    let should_remove = if let Some(mut entry) = clients_tx.get_mut(client_id) {
+    let should_remove = if parked_streams.remove(&stream_token).is_some() {
+        CLIENT_SLOT_EVENTS
+            .with_label_values(&["parked_released"])
+            .inc();
+        false
+    } else if let Some(mut entry) = clients_tx.get_mut(client_id) {
         match &mut entry.value_mut().sessions {
             SessionMap::Single((owner, _, _, _)) if *owner == stream_token => {
                 CLIENT_SLOT_EVENTS.with_label_values(&["removed"]).inc();
@@ -307,6 +312,7 @@ struct ReceiverOptions {
     stale_disconnect_guard: bool,
     policy: DeliveryPolicy,
     connect_claim_instance: Option<Arc<InstanceId>>,
+    parked_streams: Arc<ParkedStreams>,
 }
 
 #[macros::measure_duration]
@@ -324,6 +330,7 @@ async fn client_reciever(
         stale_disconnect_guard,
         policy,
         connect_claim_instance,
+        parked_streams,
     } = options;
     match client_req {
         SenderType::ClientConnection((session_id, stream_token, client_tx)) => {
@@ -438,6 +445,7 @@ async fn client_reciever(
             CONNECTED_CLIENTS.dec();
             handle_client_disconnection_or_failure(
                 clients_tx.clone(),
+                &parked_streams,
                 &client_id,
                 &session_id,
                 stream_token,
@@ -474,6 +482,7 @@ async fn client_reciever_looper(
 #[macros::measure_duration]
 fn evict_superseded_connection(
     clients_tx: &Arc<ReaderMap>,
+    parked_streams: &ParkedStreams,
     instance_id: &InstanceId,
     message: ClientConnectMessage,
 ) -> &'static str {
@@ -495,9 +504,9 @@ fn evict_superseded_connection(
     };
 
     count_unacked_on_close(&entry.sessions);
-    if let SessionMap::Single((_, _, client_tx, _)) = entry.sessions {
-        // UNAVAILABLE, not ALREADY_EXISTS: shipped apps reconnect instantly on ALREADY_EXISTS, which loops evictions.
-        let _ = client_tx.try_send(Err(Status::unavailable("Superseded by a newer connection")));
+    if let SessionMap::Single((stream_token, _, client_tx, _)) = entry.sessions {
+        // Park instead of ending the stream: the shipped Android client shares one observer across streams, so any stream end nulls the live stream's ACK sender.
+        parked_streams.insert(stream_token, client_tx);
     }
     CLIENT_SLOT_EVENTS
         .with_label_values(&["evicted_by_peer"])
@@ -508,6 +517,7 @@ fn evict_superseded_connection(
 async fn client_connect_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<ReaderMap>,
+    parked_streams: Arc<ParkedStreams>,
     instance_id: Arc<InstanceId>,
 ) {
     let channel_key = client_connect_channel_key();
@@ -523,7 +533,12 @@ async fn client_connect_looper(
                 );
                 while let Some((_, message, _)) = client_connect_stream.recv().await {
                     channel_delay!(message.connected_at, "client_connect_pubsub_delay");
-                    let outcome = evict_superseded_connection(&clients_tx, &instance_id, message);
+                    let outcome = evict_superseded_connection(
+                        &clients_tx,
+                        &parked_streams,
+                        &instance_id,
+                        message,
+                    );
                     CLIENT_CONNECT_MESSAGES.with_label_values(&[outcome]).inc();
                 }
                 error!(
@@ -1137,6 +1152,8 @@ pub async fn run_notification_reader(
     let expired_queue = new_expired_queue();
     let connect_claim_instance =
         single_connection_eviction.then(|| Arc::new(InstanceId::generate()));
+    let parked_streams: Arc<ParkedStreams> =
+        Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
 
     info!(
         "[Notification Service] - delivery_mode: {}, delivery_guarantee: {}, push_cap: {:?}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}, stale_disconnect_guard: {}, single_connection_eviction: {:?}",
@@ -1154,6 +1171,7 @@ pub async fn run_notification_reader(
             stale_disconnect_guard,
             policy,
             connect_claim_instance: connect_claim_instance.clone(),
+            parked_streams: parked_streams.clone(),
         },
     ));
 
@@ -1161,6 +1179,7 @@ pub async fn run_notification_reader(
         tokio::spawn(client_connect_looper(
             redis_pool.clone(),
             clients_tx.clone(),
+            parked_streams.clone(),
             instance_id,
         ))
     });
@@ -1230,6 +1249,7 @@ mod tests {
     use super::*;
     use crate::redis::types::EntityData;
     use std::num::NonZeroU32;
+    use tonic::Status;
 
     fn notification(stream_id: &str) -> NotificationData {
         NotificationData {
@@ -1296,25 +1316,97 @@ mod tests {
         }
     }
 
+    fn parked_streams() -> ParkedStreams {
+        DashMap::with_hasher(FxBuildHasher::default())
+    }
+
     #[tokio::test]
-    async fn newer_peer_connect_evicts_and_closes_the_local_stream() {
+    async fn newer_peer_connect_evicts_but_leaves_the_local_stream_open() {
         let client_id = ClientId("c1".to_string());
+        let owner = StreamToken::next();
         let local_connected_at = Utc::now();
         let (clients_tx, mut client_rx) =
-            reader_map_connected_at(&client_id, StreamToken::next(), local_connected_at);
+            reader_map_connected_at(&client_id, owner, local_connected_at);
+        let parked = parked_streams();
         let claim = connect_claim(
             &client_id,
             &InstanceId::generate(),
             local_connected_at + chrono::Duration::seconds(10),
         );
 
-        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+        let outcome =
+            evict_superseded_connection(&clients_tx, &parked, &InstanceId::generate(), claim);
 
         assert_eq!(outcome, "evicted");
         assert!(clients_tx.get(&client_id).is_none());
-        let status = client_rx.recv().await.and_then(Result::err);
-        assert_eq!(status.map(|s| s.code()), Some(tonic::Code::Unavailable));
+        assert!(parked.contains_key(&owner));
+        assert!(matches!(
+            client_rx.try_recv(),
+            Err(sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn parked_stream_ends_only_on_its_own_disconnect() {
+        let client_id = ClientId("c1".to_string());
+        let owner = StreamToken::next();
+        let local_connected_at = Utc::now();
+        let (clients_tx, mut client_rx) =
+            reader_map_connected_at(&client_id, owner, local_connected_at);
+        let parked = parked_streams();
+        let claim = connect_claim(
+            &client_id,
+            &InstanceId::generate(),
+            local_connected_at + chrono::Duration::seconds(10),
+        );
+        evict_superseded_connection(&clients_tx, &parked, &InstanceId::generate(), claim);
+
+        handle_client_disconnection_or_failure(
+            clients_tx.clone(),
+            &parked,
+            &client_id,
+            &None,
+            StreamToken::next(),
+            true,
+        )
+        .await;
+        assert!(parked.contains_key(&owner));
+
+        handle_client_disconnection_or_failure(
+            clients_tx.clone(),
+            &parked,
+            &client_id,
+            &None,
+            owner,
+            true,
+        )
+        .await;
+        assert!(parked.is_empty());
         assert!(client_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn releasing_a_parked_stream_keeps_the_newer_local_stream() {
+        let client_id = ClientId("c1".to_string());
+        let evicted = StreamToken::next();
+        let newer = StreamToken::next();
+        let (clients_tx, _newer_rx) = reader_map_connected_at(&client_id, newer, Utc::now());
+        let parked = parked_streams();
+        let (evicted_tx, _evicted_rx) = sync::mpsc::channel(1);
+        parked.insert(evicted, evicted_tx);
+
+        handle_client_disconnection_or_failure(
+            clients_tx.clone(),
+            &parked,
+            &client_id,
+            &None,
+            evicted,
+            false,
+        )
+        .await;
+
+        assert!(parked.is_empty());
+        assert!(clients_tx.get(&client_id).is_some());
     }
 
     #[test]
@@ -1329,7 +1421,12 @@ mod tests {
             local_connected_at - chrono::Duration::seconds(10),
         );
 
-        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+        let outcome = evict_superseded_connection(
+            &clients_tx,
+            &parked_streams(),
+            &InstanceId::generate(),
+            claim,
+        );
 
         assert_eq!(outcome, "kept");
         assert!(clients_tx.get(&client_id).is_some());
@@ -1348,7 +1445,8 @@ mod tests {
             local_connected_at + chrono::Duration::seconds(10),
         );
 
-        let outcome = evict_superseded_connection(&clients_tx, &instance_id, claim);
+        let outcome =
+            evict_superseded_connection(&clients_tx, &parked_streams(), &instance_id, claim);
 
         assert_eq!(outcome, "self");
         assert!(clients_tx.get(&client_id).is_some());
@@ -1381,7 +1479,12 @@ mod tests {
             Utc::now() + chrono::Duration::seconds(10),
         );
 
-        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+        let outcome = evict_superseded_connection(
+            &clients_tx,
+            &parked_streams(),
+            &InstanceId::generate(),
+            claim,
+        );
 
         assert_eq!(outcome, "kept");
         assert!(clients_tx.get(&client_id).is_some());
@@ -1396,7 +1499,12 @@ mod tests {
             Utc::now(),
         );
 
-        let outcome = evict_superseded_connection(&clients_tx, &InstanceId::generate(), claim);
+        let outcome = evict_superseded_connection(
+            &clients_tx,
+            &parked_streams(),
+            &InstanceId::generate(),
+            claim,
+        );
 
         assert_eq!(outcome, "not_held");
     }
@@ -1425,8 +1533,15 @@ mod tests {
         let owner = StreamToken::next();
         let clients_tx = reader_map_owned_by(&client_id, owner);
 
-        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, owner, true)
-            .await;
+        handle_client_disconnection_or_failure(
+            clients_tx.clone(),
+            &parked_streams(),
+            &client_id,
+            &None,
+            owner,
+            true,
+        )
+        .await;
 
         assert!(clients_tx.get(&client_id).is_none());
     }
@@ -1437,8 +1552,15 @@ mod tests {
         let stale = StreamToken::next();
         let clients_tx = reader_map_owned_by(&client_id, StreamToken::next());
 
-        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, stale, true)
-            .await;
+        handle_client_disconnection_or_failure(
+            clients_tx.clone(),
+            &parked_streams(),
+            &client_id,
+            &None,
+            stale,
+            true,
+        )
+        .await;
 
         assert!(clients_tx.get(&client_id).is_some());
     }
@@ -1449,8 +1571,15 @@ mod tests {
         let stale = StreamToken::next();
         let clients_tx = reader_map_owned_by(&client_id, StreamToken::next());
 
-        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, stale, false)
-            .await;
+        handle_client_disconnection_or_failure(
+            clients_tx.clone(),
+            &parked_streams(),
+            &client_id,
+            &None,
+            stale,
+            false,
+        )
+        .await;
 
         assert!(clients_tx.get(&client_id).is_none());
     }
@@ -1609,8 +1738,15 @@ mod tests {
             UNACKED_NOTIFICATIONS.with_label_values(&["DISCONNECT_UNACKED_TEST", "stream_closed"]);
         let before = counter.get();
 
-        handle_client_disconnection_or_failure(clients_tx.clone(), &client_id, &None, owner, true)
-            .await;
+        handle_client_disconnection_or_failure(
+            clients_tx.clone(),
+            &parked_streams(),
+            &client_id,
+            &None,
+            owner,
+            true,
+        )
+        .await;
 
         assert_eq!(counter.get(), before + 1);
     }
