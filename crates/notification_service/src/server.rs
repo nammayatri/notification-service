@@ -112,7 +112,9 @@ pub async fn run_server() -> Result<()> {
             app_state.delivery_guarantee,
             app_state.max_delivery_attempts,
         ),
-        app_state.single_connection_eviction,
+        app_state
+            .single_connection_eviction
+            .then_some(app_state.request_timeout_seconds * 2),
     );
 
     let prometheus = prometheus_metrics();

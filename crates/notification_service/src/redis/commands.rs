@@ -12,7 +12,10 @@ use crate::{
     tools::prometheus::MEASURE_DURATION,
 };
 use anyhow::Result;
-use fred::interfaces::PubsubInterface;
+use fred::{
+    interfaces::{KeysInterface, PubsubInterface},
+    types::Expiration,
+};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use shared::measure_latency_duration;
@@ -47,15 +50,37 @@ pub async fn get_client_id(
 }
 
 #[macros::measure_duration]
+pub async fn claim_client_owner(
+    redis_pool: &RedisConnectionPool,
+    ClientId(client_id): &ClientId,
+    InstanceId(instance_id): &InstanceId,
+    owner_ttl_seconds: u64,
+) -> Result<Option<InstanceId>> {
+    let previous_owner: Option<String> = redis_pool
+        .writer_pool
+        .next()
+        .set(
+            client_owner_key(client_id),
+            instance_id.as_str(),
+            Some(Expiration::EX(owner_ttl_seconds as i64)),
+            None,
+            true,
+        )
+        .await?;
+    Ok(previous_owner.map(InstanceId))
+}
+
+#[macros::measure_duration]
 pub async fn publish_client_connect(
     redis_pool: &RedisConnectionPool,
+    InstanceId(owner): &InstanceId,
     message: &ClientConnectMessage,
 ) -> Result<()> {
     redis_pool
         .writer_pool
         .next()
         .publish::<(), _, _>(
-            client_connect_channel_key(),
+            client_connect_channel_key(owner),
             serde_json::to_string(message)?,
         )
         .await?;

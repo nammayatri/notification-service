@@ -18,8 +18,8 @@ use crate::{
     notification_latency,
     redis::{
         commands::{
-            clean_up_notifications_batch, publish_client_connect, read_client_notification,
-            read_client_notifications,
+            claim_client_owner, clean_up_notifications_batch, publish_client_connect,
+            read_client_notification, read_client_notifications,
         },
         keys::*,
         types::NotificationData,
@@ -306,12 +306,18 @@ async fn handle_client_disconnection_or_failure(
 }
 
 #[derive(Debug, Clone)]
+struct ConnectClaim {
+    instance_id: Arc<InstanceId>,
+    owner_ttl: Duration,
+}
+
+#[derive(Debug, Clone)]
 struct ReceiverOptions {
     max_shards: u64,
     delivery_mode: DeliveryMode,
     stale_disconnect_guard: bool,
     policy: DeliveryPolicy,
-    connect_claim_instance: Option<Arc<InstanceId>>,
+    connect_claim: Option<ConnectClaim>,
     parked_streams: Arc<ParkedStreams>,
 }
 
@@ -329,7 +335,7 @@ async fn client_reciever(
         delivery_mode,
         stale_disconnect_guard,
         policy,
-        connect_claim_instance,
+        connect_claim,
         parked_streams,
     } = options;
     match client_req {
@@ -404,20 +410,15 @@ async fn client_reciever(
 
             measure_latency_duration!("client_reciever_clients_tx_write", start);
 
-            if let (Some(instance_id), true) = (connect_claim_instance, is_single_session) {
+            if let (Some(claim), true) = (connect_claim, is_single_session) {
                 let message = ClientConnectMessage {
                     client_id: client_id.clone(),
-                    instance_id: (*instance_id).clone(),
+                    instance_id: (*claim.instance_id).clone(),
                     connected_at,
                 };
                 let redis_pool = redis_pool.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = publish_client_connect(&redis_pool, &message).await {
-                        error!(
-                            "[Notification Service Error] - publish_client_connect : {}",
-                            err
-                        );
-                    }
+                    notify_previous_owner(&redis_pool, message, claim.owner_ttl).await;
                 });
             }
 
@@ -514,16 +515,51 @@ fn evict_superseded_connection(
     "evicted"
 }
 
+async fn notify_previous_owner(
+    redis_pool: &RedisConnectionPool,
+    message: ClientConnectMessage,
+    owner_ttl: Duration,
+) {
+    let previous_owner = match claim_client_owner(
+        redis_pool,
+        &message.client_id,
+        &message.instance_id,
+        owner_ttl.as_secs(),
+    )
+    .await
+    {
+        Ok(previous_owner) => previous_owner,
+        Err(err) => {
+            error!(
+                "[Notification Service Error] - claim_client_owner : {}",
+                err
+            );
+            return;
+        }
+    };
+
+    let Some(previous_owner) = previous_owner.filter(|owner| *owner != message.instance_id) else {
+        return;
+    };
+
+    if let Err(err) = publish_client_connect(redis_pool, &previous_owner, &message).await {
+        error!(
+            "[Notification Service Error] - publish_client_connect : {}",
+            err
+        );
+    }
+}
+
 async fn client_connect_looper(
     redis_pool: Arc<RedisConnectionPool>,
     clients_tx: Arc<ReaderMap>,
     parked_streams: Arc<ParkedStreams>,
     instance_id: Arc<InstanceId>,
 ) {
-    let channel_key = client_connect_channel_key();
+    let channel_key = client_connect_channel_key(&instance_id.0);
     loop {
         match redis_pool
-            .subscribe_channel::<ClientConnectMessage>(channel_key)
+            .subscribe_channel::<ClientConnectMessage>(&channel_key)
             .await
         {
             Ok(mut client_connect_stream) => {
@@ -1147,17 +1183,19 @@ pub async fn run_notification_reader(
     delivery_mode: DeliveryMode,
     stale_disconnect_guard: bool,
     policy: DeliveryPolicy,
-    single_connection_eviction: bool,
+    single_connection_eviction: Option<Duration>,
 ) {
     let expired_queue = new_expired_queue();
-    let connect_claim_instance =
-        single_connection_eviction.then(|| Arc::new(InstanceId::generate()));
+    let connect_claim = single_connection_eviction.map(|owner_ttl| ConnectClaim {
+        instance_id: Arc::new(InstanceId::generate()),
+        owner_ttl,
+    });
     let parked_streams: Arc<ParkedStreams> =
         Arc::new(DashMap::with_hasher(FxBuildHasher::default()));
 
     info!(
         "[Notification Service] - delivery_mode: {}, delivery_guarantee: {}, push_cap: {:?}, sweep_delay: {}ms, retry_delay: {}ms, max_shards: {}, stale_disconnect_guard: {}, single_connection_eviction: {:?}",
-        delivery_mode, policy.guarantee, policy.push_cap, sweep_delay_millis, retry_delay_millis, max_shards, stale_disconnect_guard, connect_claim_instance
+        delivery_mode, policy.guarantee, policy.push_cap, sweep_delay_millis, retry_delay_millis, max_shards, stale_disconnect_guard, connect_claim
     );
 
     let rx_task = tokio::spawn(client_reciever_looper(
@@ -1170,17 +1208,17 @@ pub async fn run_notification_reader(
             delivery_mode,
             stale_disconnect_guard,
             policy,
-            connect_claim_instance: connect_claim_instance.clone(),
+            connect_claim: connect_claim.clone(),
             parked_streams: parked_streams.clone(),
         },
     ));
 
-    let client_connect_task = connect_claim_instance.map(|instance_id| {
+    let client_connect_task = connect_claim.map(|claim| {
         tokio::spawn(client_connect_looper(
             redis_pool.clone(),
             clients_tx.clone(),
             parked_streams.clone(),
-            instance_id,
+            claim.instance_id,
         ))
     });
 

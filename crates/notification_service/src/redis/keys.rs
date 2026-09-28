@@ -19,6 +19,10 @@ pub fn pubsub_channel_key() -> &'static str {
     "active-notification"
 }
 
-pub fn client_connect_channel_key() -> &'static str {
-    "client-connect"
+pub fn client_connect_channel_key(instance_id: &str) -> String {
+    format!("client-connect:{instance_id}")
+}
+
+pub fn client_owner_key(client_id: &str) -> String {
+    format!("NSO:{client_id}")
 }
