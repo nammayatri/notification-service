@@ -13,7 +13,7 @@ use crate::common::types::*;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthResponseData {
-    #[serde(rename = "driverId")]
+    #[serde(rename = "driverId", alias = "riderId")]
     pub client_id: ClientId,
 }
 

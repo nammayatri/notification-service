@@ -112,6 +112,7 @@ impl NotificationService {
                 .map_err(|e| Status::internal(e.to_string()))?;
             get_client_id_from_bpp_authentication(
                 &self.app_state.redis_pool,
+                token_origin,
                 &token,
                 &internal_auth_cfg.auth_url,
                 &internal_auth_cfg.auth_api_key,
@@ -275,16 +276,24 @@ impl NotificationService {
 #[macros::measure_duration]
 async fn get_client_id_from_bpp_authentication(
     redis_pool: &RedisConnectionPool,
+    token_origin: TokenOrigin,
     token: &str,
     auth_url: &Url,
     auth_api_key: &str,
     auth_token_expiry: &u32,
 ) -> Result<ClientId> {
-    match get_client_id(redis_pool, token).await? {
+    match get_client_id(redis_pool, token_origin, token).await? {
         Some(client_id) => Ok(client_id),
         None => {
             let response = internal_authentication(auth_url, token, auth_api_key).await?;
-            set_client_id(redis_pool, auth_token_expiry, token, &response.client_id).await?;
+            set_client_id(
+                redis_pool,
+                auth_token_expiry,
+                token_origin,
+                token,
+                &response.client_id,
+            )
+            .await?;
             Ok(response.client_id)
         }
     }
@@ -342,6 +351,7 @@ impl Notification for NotificationService {
             )?;
             get_client_id_from_bpp_authentication(
                 &self.app_state.redis_pool,
+                token_origin,
                 &token,
                 &internal_auth_cfg.auth_url,
                 &internal_auth_cfg.auth_api_key,
@@ -369,7 +379,12 @@ impl Notification for NotificationService {
         if let Err(err) = read_notification_tx
             .send((
                 ClientId(client_id.to_owned()),
-                SenderType::ClientConnection((session_id.to_owned(), stream_token, client_tx)),
+                SenderType::ClientConnection((
+                    session_id.to_owned(),
+                    stream_token,
+                    client_tx,
+                    token_origin,
+                )),
                 Utc::now(),
             ))
             .await
@@ -388,11 +403,15 @@ impl Notification for NotificationService {
                 (read_notification_tx.clone(), client_id.clone());
 
             info!("Client ({}) Timed Out", client_id_clone);
-            notification_client_connection_duration!("TIMED_OUT", start_time);
+            notification_client_connection_duration!(
+                "TIMED_OUT",
+                start_time,
+                token_origin.as_str()
+            );
             if let Err(err) = read_notification_tx_clone
                 .send((
                     ClientId(client_id_clone.to_owned()),
-                    SenderType::ClientDisconnection((session_id, stream_token)),
+                    SenderType::ClientDisconnection((session_id, stream_token, token_origin)),
                     Utc::now(),
                 ))
                 .await
@@ -440,6 +459,7 @@ impl Notification for NotificationService {
             )?;
             get_client_id_from_bpp_authentication(
                 &self.app_state.redis_pool,
+                token_origin,
                 &token,
                 &internal_auth_cfg.auth_url,
                 &internal_auth_cfg.auth_api_key,
@@ -467,7 +487,7 @@ impl Notification for NotificationService {
         if let Err(err) = read_notification_tx
             .send((
                 ClientId(client_id.to_owned()),
-                SenderType::ClientConnection((None, stream_token, client_tx)),
+                SenderType::ClientConnection((None, stream_token, client_tx, token_origin)),
                 Utc::now(),
             ))
             .await
@@ -519,10 +539,16 @@ impl Notification for NotificationService {
 
                             if let (Some(acked), Some(shard)) = (acked, shard_opt) {
                                 if let Some(sent_at) = acked.sent_at {
-                                    notification_latency!(sent_at, "ACK", "client", "first");
+                                    notification_latency!(
+                                        sent_at,
+                                        "ACK",
+                                        "client",
+                                        "first",
+                                        token_origin.as_str()
+                                    );
                                 }
                                 DELIVERED_NOTIFICATIONS
-                                    .with_label_values(&[&acked.category])
+                                    .with_label_values(&[&acked.category, token_origin.as_str()])
                                     .inc();
                                 if let Some(stream_id) = acked.stream_id_to_delete {
                                     let _ = clean_up_notification(
@@ -545,11 +571,19 @@ impl Notification for NotificationService {
                         }
                         Ok(None) => {
                             info!("Client ({}) Disconnected", client_id_clone);
-                            notification_client_connection_duration!("DISCONNECTED", start_time);
+                            notification_client_connection_duration!(
+                                "DISCONNECTED",
+                                start_time,
+                                token_origin.as_str()
+                            );
                             if let Err(err) = read_notification_tx_clone
                                 .send((
                                     ClientId(client_id_clone.to_owned()),
-                                    SenderType::ClientDisconnection((None, stream_token)),
+                                    SenderType::ClientDisconnection((
+                                        None,
+                                        stream_token,
+                                        token_origin,
+                                    )),
                                     Utc::now(),
                                 ))
                                 .await
@@ -563,11 +597,19 @@ impl Notification for NotificationService {
                         }
                         Err(err) => {
                             info!("Client ({}) Disconnected : {}", client_id_clone, err);
-                            notification_client_connection_duration!("DISCONNECTED", start_time);
+                            notification_client_connection_duration!(
+                                "DISCONNECTED",
+                                start_time,
+                                token_origin.as_str()
+                            );
                             if let Err(err) = read_notification_tx_clone
                                 .send((
                                     ClientId(client_id_clone.to_owned()),
-                                    SenderType::ClientDisconnection((None, stream_token)),
+                                    SenderType::ClientDisconnection((
+                                        None,
+                                        stream_token,
+                                        token_origin,
+                                    )),
                                     Utc::now(),
                                 ))
                                 .await
@@ -588,11 +630,15 @@ impl Notification for NotificationService {
                     (read_notification_tx.clone(), client_id.clone());
 
                 info!("Client ({}) Timed Out : {}", client_id_clone, err);
-                notification_client_connection_duration!("TIMED_OUT", start_time);
+                notification_client_connection_duration!(
+                    "TIMED_OUT",
+                    start_time,
+                    token_origin.as_str()
+                );
                 if let Err(err) = read_notification_tx_clone
                     .send((
                         ClientId(client_id_clone.to_owned()),
-                        SenderType::ClientDisconnection((None, stream_token)),
+                        SenderType::ClientDisconnection((None, stream_token, token_origin)),
                         Utc::now(),
                     ))
                     .await

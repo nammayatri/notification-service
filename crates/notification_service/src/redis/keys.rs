@@ -6,13 +6,18 @@
     the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+use crate::common::types::TokenOrigin;
+
 pub fn notification_client_key(client_id: &str, shard: &u64) -> String {
     // let (client_split, _) = client_id.split_at(13);
     format!("N{}{{{shard}}}", client_id)
 }
 
-pub fn client_details_key(token: &str) -> String {
-    format!("NS:{token}")
+pub fn client_details_key(token_origin: TokenOrigin, token: &str) -> String {
+    match token_origin {
+        TokenOrigin::DriverApp => format!("NS:{token}"),
+        _ => format!("NS:{}:{token}", token_origin.as_str()),
+    }
 }
 
 pub fn pubsub_channel_key() -> &'static str {

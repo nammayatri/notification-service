@@ -12,7 +12,7 @@ extern crate shared;
 use actix_web_prom::PrometheusMetrics;
 use prometheus::{
     histogram_opts, opts, register_histogram_vec, register_int_counter, register_int_counter_vec,
-    register_int_gauge, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    register_int_gauge_vec, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec,
 };
 pub use shared::tools::prometheus::*;
 
@@ -28,7 +28,7 @@ pub static NOTIFICATION_CLIENT_CONNECTION_DURATION: once_cell::sync::Lazy<Histog
                     60.0, 70.0, 80.0, 90.0, 100.0, 200.0, 300.0, 400.0,
                 ]
             ),
-            &["status"]
+            &["status", "origin"]
         )
         .expect("Failed to register notification client connection duration")
     });
@@ -52,7 +52,7 @@ pub static NOTIFICATION_LATENCY: once_cell::sync::Lazy<HistogramVec> =
                     60.0, 120.0, 300.0
                 ]
             ),
-            &["version", "ack", "source", "attempt"]
+            &["version", "ack", "source", "attempt", "origin"]
         )
         .expect("Failed to register notifiction latency metrics")
     });
@@ -65,10 +65,11 @@ pub static CHANNEL_DELAY: once_cell::sync::Lazy<HistogramVec> = once_cell::sync:
     .expect("Failed to register channel delay metrics")
 });
 
-pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGauge> = once_cell::sync::Lazy::new(|| {
-    register_int_gauge!("connected_clients", "Connected Clients")
-        .expect("Failed to register connected clients metrics")
-});
+pub static CONNECTED_CLIENTS: once_cell::sync::Lazy<IntGaugeVec> =
+    once_cell::sync::Lazy::new(|| {
+        register_int_gauge_vec!("connected_clients", "Connected Clients", &["origin"])
+            .expect("Failed to register connected clients metrics")
+    });
 
 pub static CLIENT_SLOT_EVENTS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
@@ -82,8 +83,12 @@ pub static CLIENT_SLOT_EVENTS: once_cell::sync::Lazy<IntCounterVec> =
 
 pub static TOTAL_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
     once_cell::sync::Lazy::new(|| {
-        register_int_counter_vec!("total_notifications", "Total Notifications", &["category"])
-            .expect("Failed to register total notifications metrics")
+        register_int_counter_vec!(
+            "total_notifications",
+            "Total Notifications",
+            &["category", "origin"]
+        )
+        .expect("Failed to register total notifications metrics")
     });
 
 pub static DELIVERED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
@@ -91,7 +96,7 @@ pub static DELIVERED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
         register_int_counter_vec!(
             "delivered_notifications",
             "Delivered Notifications",
-            &["category"]
+            &["category", "origin"]
         )
         .expect("Failed to register delivered notifications metrics")
     });
@@ -109,7 +114,7 @@ pub static UNACKED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> = once_ce
         register_int_counter_vec!(
             "unacked_notifications_total",
             "AtMostOnce pushes never acked, by category and whether the TTL passed or the stream closed first",
-            &["category", "reason"]
+            &["category", "reason", "origin"]
         )
         .expect("Failed to register unacked notifications metrics")
     },
@@ -120,7 +125,7 @@ pub static RETRIED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
         register_int_counter_vec!(
             "retried_notifications",
             "Notifications retried at least once (not the retry count)",
-            &["category"]
+            &["category", "origin"]
         )
         .expect("Failed to register retried notifications metrics")
     });
@@ -150,7 +155,7 @@ pub static EXPIRED_NOTIFICATIONS: once_cell::sync::Lazy<IntCounterVec> =
         register_int_counter_vec!(
             "expired_notifications",
             "Expired Notifications",
-            &["category", "reason"]
+            &["category", "reason", "origin"]
         )
         .expect("Failed to register expired notifications metrics")
     });
@@ -167,10 +172,10 @@ pub static CLEANUP_PUSH_SKIPPED: once_cell::sync::Lazy<IntCounterVec> =
 
 #[macro_export]
 macro_rules! notification_client_connection_duration {
-    ($status:expr, $start:expr) => {
+    ($status:expr, $start:expr, $origin:expr) => {
         let duration = $start.elapsed().as_secs_f64();
         NOTIFICATION_CLIENT_CONNECTION_DURATION
-            .with_label_values(&[$status])
+            .with_label_values(&[$status, $origin])
             .observe(duration);
     };
 }
@@ -188,12 +193,12 @@ macro_rules! incoming_api {
 
 #[macro_export]
 macro_rules! notification_latency {
-    ($start:expr, $ack:expr, $source:expr, $attempt:expr) => {
+    ($start:expr, $ack:expr, $source:expr, $attempt:expr, $origin:expr) => {
         let now = Utc::now();
         let duration = abs_diff_utc_as_sec($start, now);
         let version = std::env::var("DEPLOYMENT_VERSION").unwrap_or("DEV".to_string());
         NOTIFICATION_LATENCY
-            .with_label_values(&[version.as_str(), $ack, $source, $attempt])
+            .with_label_values(&[version.as_str(), $ack, $source, $attempt, $origin])
             .observe(duration);
     };
 }

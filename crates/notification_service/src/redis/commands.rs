@@ -29,11 +29,16 @@ static CLIENT_ID_FROM_STREAM_KEY: Lazy<Regex> =
 pub async fn set_client_id(
     redis_pool: &RedisConnectionPool,
     auth_token_expiry: &u32,
+    token_origin: TokenOrigin,
     token: &str,
     ClientId(client_id): &ClientId,
 ) -> Result<()> {
     redis_pool
-        .set_key_as_str(&client_details_key(token), client_id, *auth_token_expiry)
+        .set_key_as_str(
+            &client_details_key(token_origin, token),
+            client_id,
+            *auth_token_expiry,
+        )
         .await?;
     Ok(())
 }
@@ -41,10 +46,11 @@ pub async fn set_client_id(
 #[macros::measure_duration]
 pub async fn get_client_id(
     redis_pool: &RedisConnectionPool,
+    token_origin: TokenOrigin,
     token: &str,
 ) -> Result<Option<ClientId>> {
     Ok(redis_pool
-        .get_key_as_str(&client_details_key(token))
+        .get_key_as_str(&client_details_key(token_origin, token))
         .await?
         .map(ClientId))
 }

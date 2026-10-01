@@ -32,6 +32,7 @@ pub enum CleanupReason {
 pub struct ExpiredMeta {
     pub category: String,
     pub reason: CleanupReason,
+    pub origin: TokenOrigin,
 }
 
 #[derive(Debug)]
@@ -117,9 +118,21 @@ pub struct AwaitingAck {
 pub struct ActiveNotification {
     pending: FxHashMap<NotificationId, NotificationMeta>,
     awaiting_ack: FxHashMap<NotificationId, AwaitingAck>,
+    origin: TokenOrigin,
 }
 
 impl ActiveNotification {
+    pub fn new(origin: TokenOrigin) -> Self {
+        Self {
+            origin,
+            ..Self::default()
+        }
+    }
+
+    pub fn origin(&self) -> TokenOrigin {
+        self.origin
+    }
+
     pub fn update(&mut self, notifications: Vec<NotificationData>) {
         for notification in notifications {
             self.pending
@@ -325,10 +338,10 @@ impl StreamToken {
 #[derive(Display)]
 pub enum SenderType {
     #[strum(to_string = "ClientConnection")]
-    ClientConnection((Option<SessionID>, StreamToken, ClientTx)),
+    ClientConnection((Option<SessionID>, StreamToken, ClientTx, TokenOrigin)),
 
     #[strum(to_string = "ClientDisconnection")]
-    ClientDisconnection((Option<SessionID>, StreamToken)),
+    ClientDisconnection((Option<SessionID>, StreamToken, TokenOrigin)),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -373,12 +386,34 @@ pub type ReaderMap = DashMap<ClientId, ClientEntry, FxBuildHasher>;
 pub type ParkedStreams = DashMap<StreamToken, ClientTx, FxBuildHasher>;
 
 #[derive(
-    Debug, Clone, EnumString, EnumIter, Display, Serialize, Deserialize, Eq, Hash, PartialEq,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    EnumString,
+    EnumIter,
+    Display,
+    Serialize,
+    Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
 )]
 pub enum TokenOrigin {
+    #[default]
     DriverApp,
     RiderApp,
     Dashboard,
+}
+
+impl TokenOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TokenOrigin::DriverApp => "DriverApp",
+            TokenOrigin::RiderApp => "RiderApp",
+            TokenOrigin::Dashboard => "Dashboard",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Display, Serialize, Deserialize, Eq, PartialEq)]

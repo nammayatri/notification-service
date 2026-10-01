@@ -87,6 +87,7 @@ fn push_delivered_cleanup(
     client_id: &ClientId,
     shard: u64,
     notification: &NotificationData,
+    origin: TokenOrigin,
 ) {
     cleanup_queue
         .entry(client_id.clone())
@@ -101,14 +102,15 @@ fn push_delivered_cleanup(
             ExpiredMeta {
                 category: notification.category.clone(),
                 reason: CleanupReason::Delivered,
+                origin,
             },
         );
 }
 
-fn count_unacked(categories: Vec<String>, reason: &'static str) {
+fn count_unacked(categories: Vec<String>, reason: &'static str, origin: TokenOrigin) {
     for category in categories {
         UNACKED_NOTIFICATIONS
-            .with_label_values(&[&category, reason])
+            .with_label_values(&[&category, reason, origin.as_str()])
             .inc();
     }
 }
@@ -119,7 +121,9 @@ fn count_unacked_on_close(sessions: &SessionMap) {
         SessionMap::Multi(sessions) => sessions.values().next().map(|(_, active)| active),
     };
     if let Some(active) = primary {
-        count_unacked(active.lock().drain_awaiting_ack(), "stream_closed");
+        let mut guard = active.lock();
+        let origin = guard.origin();
+        count_unacked(guard.drain_awaiting_ack(), "stream_closed", origin);
     }
 }
 
@@ -139,6 +143,7 @@ fn settle_push_round(
         return;
     }
     if policy.guarantee.removes_on_push() {
+        let origin = active.lock().origin();
         let (primary, actives) = snapshot_session_actives(clients_tx, client_id);
         for session_active in actives {
             let is_primary = primary
@@ -151,7 +156,13 @@ fn settle_push_round(
                 guard.discard(&notification.id);
             }
         }
-        push_delivered_cleanup(cleanup_queue, client_id, shard.inner(), notification);
+        push_delivered_cleanup(
+            cleanup_queue,
+            client_id,
+            shard.inner(),
+            notification,
+            origin,
+        );
     }
 }
 
@@ -171,6 +182,7 @@ async fn send_notification(
     notification: NotificationData,
     source: &'static str,
     attempt: &'static str,
+    origin: TokenOrigin,
 ) -> Result<()> {
     client_tx_send(client_tx, &notification).await?;
 
@@ -178,7 +190,8 @@ async fn send_notification(
         get_timestamp_from_stream_id(&notification.stream_id.inner()).inner(),
         "NACK",
         source,
-        attempt
+        attempt,
+        origin.as_str()
     );
 
     Ok(())
@@ -220,7 +233,7 @@ async fn flush_expired_queue(redis_pool: &Arc<RedisConnectionPool>, expired_queu
         for (stream_id, meta) in drained {
             if let CleanupReason::Expired(reason) = meta.reason {
                 EXPIRED_NOTIFICATIONS
-                    .with_label_values(&[&meta.category, reason.as_str()])
+                    .with_label_values(&[&meta.category, reason.as_str(), meta.origin.as_str()])
                     .inc();
             }
             ids.push(stream_id);
@@ -339,9 +352,11 @@ async fn client_reciever(
         parked_streams,
     } = options;
     match client_req {
-        SenderType::ClientConnection((session_id, stream_token, client_tx)) => {
+        SenderType::ClientConnection((session_id, stream_token, client_tx, origin)) => {
             info!("[Client Connected] : {:?}", client_id);
-            CONNECTED_CLIENTS.inc();
+            CONNECTED_CLIENTS
+                .with_label_values(&[origin.as_str()])
+                .inc();
 
             let shard = Shard((hash_uuid(&client_id.inner()) % max_shards as u128) as u64);
 
@@ -349,7 +364,7 @@ async fn client_reciever(
 
             let connected_at = Utc::now();
             let is_single_session = session_id.is_none();
-            let active_notification = Arc::new(Mutex::new(ActiveNotification::default()));
+            let active_notification = Arc::new(Mutex::new(ActiveNotification::new(origin)));
             let client_tx_for_catchup = client_tx.clone();
 
             match clients_tx.entry(client_id.clone()) {
@@ -441,9 +456,11 @@ async fn client_reciever(
                 });
             }
         }
-        SenderType::ClientDisconnection((session_id, stream_token)) => {
+        SenderType::ClientDisconnection((session_id, stream_token, origin)) => {
             warn!("[Client Disconnected] : {:?} : {:?}", client_id, session_id);
-            CONNECTED_CLIENTS.dec();
+            CONNECTED_CLIENTS
+                .with_label_values(&[origin.as_str()])
+                .dec();
             handle_client_disconnection_or_failure(
                 clients_tx.clone(),
                 &parked_streams,
@@ -612,9 +629,12 @@ fn ingest_backfill(
     }
     for active in actives {
         let mut guard = active.lock();
+        let origin = guard.origin();
         for n in &notifs {
             if guard.try_claim_total(n) {
-                TOTAL_NOTIFICATIONS.with_label_values(&[&n.category]).inc();
+                TOTAL_NOTIFICATIONS
+                    .with_label_values(&[&n.category, origin.as_str()])
+                    .inc();
             }
         }
         guard.update(notifs.to_vec());
@@ -708,14 +728,15 @@ async fn retry_pending_in_memory(
             let _redis_pool = redis_pool.clone();
             let expired_queue = expired_queue.clone();
             async move {
-                let (pending, unacked) = {
+                let (pending, unacked, origin) = {
                     let mut guard = w.active.lock();
                     (
                         guard.pending_redelivery(),
                         guard.expire_awaiting_ack(Utc::now()),
+                        guard.origin(),
                     )
                 };
-                count_unacked(unacked, "ttl");
+                count_unacked(unacked, "ttl", origin);
                 if pending.is_empty() {
                     return;
                 }
@@ -740,6 +761,7 @@ async fn retry_pending_in_memory(
                                         ExpiredMeta {
                                             category: notification.category.clone(),
                                             reason: CleanupReason::Expired(reason),
+                                            origin,
                                         },
                                         "retry",
                                     );
@@ -755,12 +777,18 @@ async fn retry_pending_in_memory(
                                 }
                                 if guard.try_claim_total(&notification) {
                                     TOTAL_NOTIFICATIONS
-                                        .with_label_values(&[&notification.category])
+                                        .with_label_values(&[
+                                            &notification.category,
+                                            origin.as_str(),
+                                        ])
                                         .inc();
                                 }
                                 if guard.try_claim_retry(&notification.id) {
                                     RETRIED_NOTIFICATIONS
-                                        .with_label_values(&[&notification.category])
+                                        .with_label_values(&[
+                                            &notification.category,
+                                            origin.as_str(),
+                                        ])
                                         .inc();
                                 }
                                 guard.attempt(&notification.id)
@@ -777,6 +805,7 @@ async fn retry_pending_in_memory(
                                             notification,
                                             "retry",
                                             attempt,
+                                            origin,
                                         )
                                         .await
                                         {
@@ -990,7 +1019,7 @@ async fn dispatch_and_send_notifications(
 
     for notification in notifications {
         let expired = notification.ttl.inner() < Utc::now();
-        let (count_total, expiry_reason, attempt, push_claimed) = {
+        let (count_total, expiry_reason, attempt, push_claimed, origin) = {
             let mut guard = active.lock();
             if !guard.contains(&notification.id) {
                 continue;
@@ -1003,12 +1032,12 @@ async fn dispatch_and_send_notifications(
             };
             let attempt = guard.attempt(&notification.id);
             let push_claimed = !expired && guard.try_claim_push(&notification.id, policy.push_cap);
-            (ct, reason, attempt, push_claimed)
+            (ct, reason, attempt, push_claimed, guard.origin())
         };
 
         if count_total {
             TOTAL_NOTIFICATIONS
-                .with_label_values(&[&notification.category])
+                .with_label_values(&[&notification.category, origin.as_str()])
                 .inc();
         }
 
@@ -1022,6 +1051,7 @@ async fn dispatch_and_send_notifications(
                     ExpiredMeta {
                         category: notification.category.clone(),
                         reason: CleanupReason::Expired(reason),
+                        origin,
                     },
                     "dispatch",
                 );
@@ -1029,7 +1059,9 @@ async fn dispatch_and_send_notifications(
         } else if push_claimed {
             let mut pushed = false;
             for client_tx in target_client_txs {
-                match send_notification(client_tx, notification.to_owned(), source, attempt).await {
+                match send_notification(client_tx, notification.to_owned(), source, attempt, origin)
+                    .await
+                {
                     Ok(()) => {
                         active.lock().mark_sent(&notification.id, Utc::now());
                         pushed = true;
@@ -1772,8 +1804,11 @@ mod tests {
         let active = primary_active(&clients_tx, &client_id);
         pushed(&active, &n);
         active.lock().await_ack(&n.id);
-        let counter =
-            UNACKED_NOTIFICATIONS.with_label_values(&["DISCONNECT_UNACKED_TEST", "stream_closed"]);
+        let counter = UNACKED_NOTIFICATIONS.with_label_values(&[
+            "DISCONNECT_UNACKED_TEST",
+            "stream_closed",
+            TokenOrigin::DriverApp.as_str(),
+        ]);
         let before = counter.get();
 
         handle_client_disconnection_or_failure(
