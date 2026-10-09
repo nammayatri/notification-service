@@ -167,10 +167,17 @@ fn settle_push_round(
 }
 
 #[macros::measure_duration]
-async fn client_tx_send(client_tx: &ClientTx, notification: &NotificationData) -> Result<()> {
+async fn client_tx_send(
+    client_tx: &ClientTx,
+    notification: &NotificationData,
+    created_at: DateTime<Utc>,
+    connected_at: DateTime<Utc>,
+) -> Result<()> {
     client_tx
         .send(Ok(transform_notification_data_to_payload(
             notification.clone(),
+            created_at,
+            connected_at,
         )))
         .await?;
     Ok(())
@@ -183,16 +190,12 @@ async fn send_notification(
     source: &'static str,
     attempt: &'static str,
     origin: TokenOrigin,
+    connected_at: DateTime<Utc>,
 ) -> Result<()> {
-    client_tx_send(client_tx, &notification).await?;
+    let created_at = get_timestamp_from_stream_id(&notification.stream_id.inner()).inner();
+    client_tx_send(client_tx, &notification, created_at, connected_at).await?;
 
-    notification_latency!(
-        get_timestamp_from_stream_id(&notification.stream_id.inner()).inner(),
-        "NACK",
-        source,
-        attempt,
-        origin.as_str()
-    );
+    notification_latency!(created_at, "NACK", source, attempt, origin.as_str());
 
     Ok(())
 }
@@ -364,7 +367,8 @@ async fn client_reciever(
 
             let connected_at = Utc::now();
             let is_single_session = session_id.is_none();
-            let active_notification = Arc::new(Mutex::new(ActiveNotification::new(origin)));
+            let active_notification =
+                Arc::new(Mutex::new(ActiveNotification::new(origin, connected_at)));
             let client_tx_for_catchup = client_tx.clone();
 
             match clients_tx.entry(client_id.clone()) {
@@ -728,12 +732,13 @@ async fn retry_pending_in_memory(
             let _redis_pool = redis_pool.clone();
             let expired_queue = expired_queue.clone();
             async move {
-                let (pending, unacked, origin) = {
+                let (pending, unacked, origin, connected_at) = {
                     let mut guard = w.active.lock();
                     (
                         guard.pending_redelivery(),
                         guard.expire_awaiting_ack(Utc::now()),
                         guard.origin(),
+                        guard.connected_at(),
                     )
                 };
                 count_unacked(unacked, "ttl", origin);
@@ -806,6 +811,7 @@ async fn retry_pending_in_memory(
                                             "retry",
                                             attempt,
                                             origin,
+                                            connected_at,
                                         )
                                         .await
                                         {
@@ -1058,9 +1064,17 @@ async fn dispatch_and_send_notifications(
             }
         } else if push_claimed {
             let mut pushed = false;
+            let connected_at = active.lock().connected_at();
             for client_tx in target_client_txs {
-                match send_notification(client_tx, notification.to_owned(), source, attempt, origin)
-                    .await
+                match send_notification(
+                    client_tx,
+                    notification.to_owned(),
+                    source,
+                    attempt,
+                    origin,
+                    connected_at,
+                )
+                .await
                 {
                     Ok(()) => {
                         active.lock().mark_sent(&notification.id, Utc::now());
@@ -1318,6 +1332,7 @@ pub async fn run_notification_reader(
 mod tests {
     use super::*;
     use crate::redis::types::EntityData;
+    use chrono::TimeZone;
     use std::num::NonZeroU32;
     use tonic::Status;
 
@@ -1337,6 +1352,49 @@ mod tests {
                 data: String::new(),
             },
         }
+    }
+
+    async fn pushed_payload(stream_id: &str, connected_at_ms: i64) -> crate::NotificationPayload {
+        let (client_tx, mut client_rx) = sync::mpsc::channel(1);
+        let connected_at = Utc
+            .timestamp_millis_opt(connected_at_ms)
+            .single()
+            .expect("valid millis");
+        send_notification(
+            &client_tx,
+            notification(stream_id),
+            "catchup",
+            "first",
+            TokenOrigin::RiderApp,
+            connected_at,
+        )
+        .await
+        .expect("send succeeds");
+        client_rx
+            .recv()
+            .await
+            .and_then(|item| item.ok())
+            .expect("payload pushed")
+    }
+
+    #[tokio::test]
+    async fn entry_appended_before_connect_is_replayed() {
+        let payload = pushed_payload("1000-0", 2000).await;
+        assert!(payload.replayed);
+        assert_eq!(payload.created_at_ms, 1000);
+    }
+
+    #[tokio::test]
+    async fn entry_appended_after_connect_is_live() {
+        let payload = pushed_payload("3000-0", 2000).await;
+        assert!(!payload.replayed);
+        assert_eq!(payload.created_at_ms, 3000);
+    }
+
+    #[tokio::test]
+    async fn entry_appended_at_connect_millisecond_is_live() {
+        let payload = pushed_payload("2000-5", 2000).await;
+        assert!(!payload.replayed);
     }
 
     fn reader_map_with_client(client_id: &ClientId) -> Arc<ReaderMap> {

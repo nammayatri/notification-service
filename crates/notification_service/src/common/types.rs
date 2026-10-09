@@ -119,18 +119,24 @@ pub struct ActiveNotification {
     pending: FxHashMap<NotificationId, NotificationMeta>,
     awaiting_ack: FxHashMap<NotificationId, AwaitingAck>,
     origin: TokenOrigin,
+    connected_at: DateTime<Utc>,
 }
 
 impl ActiveNotification {
-    pub fn new(origin: TokenOrigin) -> Self {
+    pub fn new(origin: TokenOrigin, connected_at: DateTime<Utc>) -> Self {
         Self {
             origin,
+            connected_at,
             ..Self::default()
         }
     }
 
     pub fn origin(&self) -> TokenOrigin {
         self.origin
+    }
+
+    pub fn connected_at(&self) -> DateTime<Utc> {
+        self.connected_at
     }
 
     pub fn update(&mut self, notifications: Vec<NotificationData>) {

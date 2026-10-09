@@ -118,6 +118,8 @@ pub fn abs_diff_utc_as_sec(old: DateTime<Utc>, new: DateTime<Utc>) -> f64 {
 #[macros::measure_duration]
 pub fn transform_notification_data_to_payload(
     notification: NotificationData,
+    created_at: DateTime<Utc>,
+    connected_at: DateTime<Utc>,
 ) -> NotificationPayload {
     let entity = Entity {
         id: notification.entity.id,
@@ -131,6 +133,8 @@ pub fn transform_notification_data_to_payload(
         body: notification.body,
         show: notification.show,
         entity: Some(entity),
+        replayed: created_at < connected_at,
+        created_at_ms: created_at.timestamp_millis(),
     }
 }
 
