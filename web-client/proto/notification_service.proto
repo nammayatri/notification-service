@@ -22,6 +22,8 @@ message NotificationPayload {
   string body = 4;
   string show = 5;
   Entity entity = 6;
+  bool replayed = 7;
+  int64 created_at_ms = 8;
 }
 
 // Notification service with a single Bi-directional RPC method
