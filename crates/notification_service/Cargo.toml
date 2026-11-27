@@ -57,8 +57,8 @@ dashmap = "5.5.3"
 parking_lot = "0.12"
 console-subscriber = "0.2.0"
 
-macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "f643312" }
-shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "f643312" }
+macros = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "54e0418" }
+shared = { git = "https://github.com/nammayatri/shared-kernel-rs", rev = "54e0418" }
 # shared = { path = "/Users/khuzemakhomosi/Documents/shared-kernel-rs/crates/shared" }
 
 [build-dependencies]
