@@ -350,6 +350,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "approx"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -531,6 +540,30 @@ dependencies = [
  "pin-project-lite",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aws-sdk-kms"
+version = "1.106.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2336350f96efcf9c2552b7fdb4dd07a0c1fef11f22b28fb020a9e33e7925cf9d"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
 ]
 
 [[package]]
@@ -1904,6 +1937,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "geo-types"
+version = "0.7.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94776032c45f950d30a13af6113c2ad5625316c9abfbccee4dd5a6695f8fe0f5"
+dependencies = [
+ "approx",
+ "num-traits",
+ "serde",
+]
+
+[[package]]
+name = "geohash"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f58890382f70caccc5fa388981f7ac80c913795042afce9f3e065695d8f7464"
+dependencies = [
+ "geo-types",
+ "libm",
+]
+
+[[package]]
 name = "gethostname"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2726,6 +2780,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "linked-hash-map"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2793,7 +2853,7 @@ dependencies = [
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=f643312#f6433126e1a5b7b795381c8ab927b1c58051837c"
+source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=54e0418#54e04187aba54a9d1ebc8d15185db384ec23f8f8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3061,6 +3121,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+ "libm",
 ]
 
 [[package]]
@@ -4164,7 +4225,7 @@ dependencies = [
 [[package]]
 name = "shared"
 version = "0.1.0"
-source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=f643312#f6433126e1a5b7b795381c8ab927b1c58051837c"
+source = "git+https://github.com/nammayatri/shared-kernel-rs?rev=54e0418#54e04187aba54a9d1ebc8d15185db384ec23f8f8"
 dependencies = [
  "actix",
  "actix-http",
@@ -4172,12 +4233,15 @@ dependencies = [
  "actix-web-prom",
  "async-trait",
  "aws-config",
+ "aws-sdk-kms",
  "aws-sdk-s3",
  "aws-types",
+ "base64 0.22.1",
  "chrono",
  "error-stack",
  "fred",
  "futures",
+ "geohash",
  "google-cloud-storage",
  "macros",
  "once_cell",
